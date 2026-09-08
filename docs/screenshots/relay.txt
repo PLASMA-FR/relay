@@ -1,0 +1,30 @@
+ RELAY  /  desktop                                                                                  
+ Connected · 100.64.0.5                                                                             
+       Devices            Transfers            History             Details             Find /       
+╔════════ Devices ═══════╗┌─────────────────────────────── Transfers ──────────────────────────────┐
+║● laptop ✓              ║│challenge.zip  ·  transferring                                          │
+║100.64.0.14 · ready     ║│━━━━━━━━━━──  87%  91.0 MiB/s                                           │
+║● dev-vps ✓             ║│notes.txt  ·  offered                                                   │
+║100.64.0.27 · ready     ║│Approval needed · Enter / click for actions                             │
+║○ workstation ✓         ║│screenshot.png  ·  verified                                             │
+║100.64.0.42 · offline   ║│Recent · dev-vps · 2.6 MiB                                              │
+║                        ║│                                                                        │
+║                        ║│                                                                        │
+║                        ║│                                                                        │
+║                        ║│                                                                        │
+║                        ║│                                                                        │
+║                        ║│                                                                        │
+║                        ║│                                                                        │
+║                        ║│                                                                        │
+║                        ║│                                                                        │
+║                        ║│                                                                        │
+║                        ║│                                                                        │
+║                        ║│                                                                        │
+║                        ║│                                                                        │
+║                        ║│                                                                        │
+║                        ║│                                                                        │
+║                        ║│                                                                        │
+╚════════════════════════╝└────────────────────────────────────────────────────────────────────────┘
+ 2 active · 1 waiting for approval · Relay Clipboard                                                
+ Transfers → Enter to accept or reject                                                              
+    S Send        C Clip        F Files        More        H History      ? Help         Q Quit     
