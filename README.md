@@ -42,6 +42,32 @@ as an audited production system.
 
 ## Install
 
+### Android companion
+
+Relay now includes a native Android app for sending files, text and URLs to your
+other devices and receiving verified transfers. It uses the same encrypted
+protocol as the terminal app. Install the APK from the
+[releases page](https://github.com/PLASMA-FR/relay/releases), connect Tailscale,
+and enable availability in Relay. On your computer:
+
+```sh
+relay mobile invite --qr
+```
+
+Scan the QR code from **Add device** on the phone and confirm the fingerprint.
+Copy the phone's pairing link from **My device**, then verify the reverse direction:
+
+```sh
+relay mobile pair 'relay://pair?...'
+```
+
+Android offers saved-device discovery, a share-sheet target, transfer controls,
+incoming notifications, and a private inbox with explicit save/share actions.
+See the [mobile guide](mobile/README.md) for installation, build instructions and
+Android-specific limitations. Existing protocol-v1 desktop peers remain compatible.
+
+### Linux terminal app
+
 Prebuilt Linux amd64 and arm64 archives are available on the
 [releases page](https://github.com/PLASMA-FR/relay/releases). Download the matching
 archive and `checksums.txt`, verify the archive with SHA-256, extract it, and run

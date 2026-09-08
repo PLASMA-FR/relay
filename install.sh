@@ -51,7 +51,7 @@ if [ -z "$binary" ]; then
     if [ -f "$script_dir/go.mod" ]; then
         command -v go >/dev/null 2>&1 || fail 'Go 1.25+ is needed to build this checkout. Install Go from https://go.dev/dl/, or use --binary PATH.'
         printf 'Building Relay for linux/%s…\n' "$arch"
-        (cd "$script_dir" && CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags '-s -w -X github.com/PLASMA-FR/relay/internal/model.Version=0.1.0' -o "$work/relay" ./cmd/relay)
+        (cd "$script_dir" && CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags '-s -w -X github.com/PLASMA-FR/relay/internal/model.Version=0.2.0' -o "$work/relay" ./cmd/relay)
         binary=$work/relay
     elif [ -f "$script_dir/relay" ]; then
         binary=$script_dir/relay

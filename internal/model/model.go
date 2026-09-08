@@ -6,7 +6,7 @@ import "time"
 
 const ProtocolVersion = 1
 
-var Version = "0.1.0"
+var Version = "0.2.0"
 
 type Peer struct {
 	ID           string    `json:"id"`

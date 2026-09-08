@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 umask 022
-version=${1:-0.1.0}
+version=${1:-0.2.0}
 case "$version" in *[!a-zA-Z0-9._-]*|'') printf 'Invalid release version.\n' >&2; exit 2 ;; esac
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
