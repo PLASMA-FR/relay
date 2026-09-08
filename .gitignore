@@ -1,0 +1,13 @@
+/relay
+/bin/
+/dist/
+/coverage.out
+*.test
+*.prof
+.DS_Store
+.env
+.env.*
+*.pem
+*.key
+*.relay-part-*
+/test-results/

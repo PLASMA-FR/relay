@@ -1,0 +1,23 @@
+# Relay uses your hostname unless you set a display name.
+# name = "desktop"
+
+[receive]
+# Defaults to ~/Downloads/Relay when ~/Downloads exists; otherwise ~/relay-inbox.
+# directory = "~/relay-inbox"
+auto_accept_trusted = true
+conflict = "rename" # rename, replace, skip, cancel
+max_bytes = 1099511627776 # 1 TiB per offer; metadata and concurrency also bounded
+
+[ui]
+mouse = true
+vim_keys = true
+ascii = false
+
+[clipboard]
+fallback_internal = true
+
+[network]
+tailscale_only = true
+port = 7331
+max_concurrent = 3
+discovery_seconds = 15
