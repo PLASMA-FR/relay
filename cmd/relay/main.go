@@ -87,6 +87,7 @@ func execute(ctx context.Context, args []string, in io.Reader, out, errOut io.Wr
 }
 func (a *app) command() *cobra.Command {
 	root := &cobra.Command{Use: "relay", Short: "Files, clipboard and context — across your Tailnet", Long: "Relay is a private, terminal-native sharing desk for your Tailscale devices.\nRun without a command to open the live interface.", Version: model.Version, SilenceUsage: true, SilenceErrors: true, Args: cobra.NoArgs}
+	root.AddCommand(a.mobileCommand())
 	root.PersistentFlags().StringVar(&a.configPath, "config", "", "configuration file (default ~/.config/relay/config.toml)")
 	root.PersistentFlags().BoolVar(&a.json, "json", false, "machine-readable JSON output")
 	root.PersistentFlags().BoolVar(&a.noStart, "no-start", false, "do not automatically start the local daemon")
