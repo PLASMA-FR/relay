@@ -1,9 +1,7 @@
 package io.github.plasmafr.relay
 
-import android.graphics.Bitmap
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
-import androidx.test.platform.app.InstrumentationRegistry
 import io.github.plasmafr.relay.data.Peer
 import io.github.plasmafr.relay.data.RelayState
 import io.github.plasmafr.relay.data.Transfer
@@ -15,7 +13,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Rule
 import org.junit.Test
-import java.io.File
 
 /** Explicit fixtures: these tests never instantiate RelayRepository or start the Go runtime. */
 class RelayScreenTest {
@@ -132,11 +129,6 @@ class RelayScreenTest {
 
     private fun saveScreenshot(name: String) {
         compose.waitForIdle()
-        val instrumentation = InstrumentationRegistry.getInstrumentation()
-        val bitmap = requireNotNull(instrumentation.uiAutomation.takeScreenshot())
-        val output = File(instrumentation.targetContext.getExternalFilesDir("screenshots"), name)
-        output.parentFile?.mkdirs()
-        output.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
-        bitmap.recycle()
+        saveTestScreenshot(name)
     }
 }
