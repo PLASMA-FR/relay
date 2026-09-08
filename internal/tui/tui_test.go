@@ -520,6 +520,70 @@ func TestNativeEventLoopMouseKeyboardAndResize(t *testing.T) {
 	})
 }
 
+func TestNativeEventLoopRapidClicksActivateDistinctButtons(t *testing.T) {
+	u, _, _ := setup(t)
+	// Widen the interval to avoid timing-dependent coverage on slow CI hosts.
+	interval := tview.DoubleClickInterval
+	tview.DoubleClickInterval = time.Minute
+	defer func() { tview.DoubleClickInterval = interval }()
+	selected := make(chan string, 2)
+	first := u.button("First", func() { selected <- "first" })
+	second := u.button("Second", func() { selected <- "second" })
+	doubleClick := make(chan struct{}, 1)
+	capture := second.GetMouseCapture()
+	second.SetMouseCapture(func(action tview.MouseAction, event *tcell.EventMouse) (tview.MouseAction, *tcell.EventMouse) {
+		if action == tview.MouseLeftDoubleClick {
+			doubleClick <- struct{}{}
+		}
+		return capture(action, event)
+	})
+	u.app.SetRoot(tview.NewFlex().AddItem(first, 0, 1, true).AddItem(second, 0, 1, false), true)
+	screen := tcell.NewSimulationScreen("UTF-8")
+	u.app.SetScreen(screen)
+	screen.SetSize(80, 24)
+	ready := make(chan struct{})
+	var drawn sync.Once
+	u.app.SetAfterDrawFunc(func(tcell.Screen) { drawn.Do(func() { close(ready) }) })
+	done := make(chan error, 1)
+	go func() { done <- u.app.Run() }()
+	defer func() {
+		u.app.Stop()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Error(err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Error("UI event loop did not stop")
+		}
+	}()
+	select {
+	case <-ready:
+	case <-time.After(3 * time.Second):
+		t.Fatal("UI event loop did not draw")
+	}
+	// Raw button down/up pairs let Application produce native click actions.
+	for _, x := range []int{10, 50} {
+		u.app.QueueEvent(tcell.NewEventMouse(x, 10, tcell.Button1, 0))
+		u.app.QueueEvent(tcell.NewEventMouse(x, 10, tcell.ButtonNone, 0))
+	}
+	for _, want := range []string{"first", "second"} {
+		select {
+		case got := <-selected:
+			if got != want {
+				t.Fatalf("activated %q; wanted %q", got, want)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatalf("rapid click did not activate %s button", want)
+		}
+	}
+	select {
+	case <-doubleClick:
+	default:
+		t.Fatal("regression did not exercise tview's native double-click classification")
+	}
+}
+
 func TestSendOnDisconnectedOrUnpairedPeerIsActionable(t *testing.T) {
 	u, f, s := setup(t)
 	u.connected = false

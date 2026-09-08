@@ -173,6 +173,14 @@ func (u *ui) button(label string, fn func()) *tview.Button {
 	b := tview.NewButton(label).SetSelectedFunc(fn).SetStyle(tcell.StyleDefault.Foreground(u.foreground).Background(u.background)).
 		SetActivatedStyle(tcell.StyleDefault.Foreground(u.accent).Reverse(true))
 	b.SetBorder(false)
+	b.SetMouseCapture(func(action tview.MouseAction, event *tcell.EventMouse) (tview.MouseAction, *tcell.EventMouse) {
+		// tview classifies rapid clicks globally, even across different controls.
+		// Buttons have one action, so a second click should still activate it.
+		if action == tview.MouseLeftDoubleClick {
+			action = tview.MouseLeftClick
+		}
+		return action, event
+	})
 	return b
 }
 func (u *ui) focusStyle() {

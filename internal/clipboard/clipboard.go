@@ -61,6 +61,17 @@ func run(ctx context.Context, input string, name string, args ...string) (string
 	}
 	return out.String(), nil
 }
+
+func writeSystem(ctx context.Context, text, name string, args ...string) error {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.WaitDelay = 250 * time.Millisecond
+	cmd.Stdin = strings.NewReader(text)
+	// Clipboard owners may fork and retain their parent's descriptors. Nil
+	// stdout/stderr attach /dev/null directly, avoiding inherited capture pipes.
+	return cmd.Run()
+}
 func (m *Manager) Read(ctx context.Context) (string, error) {
 	var text string
 	var err error
@@ -74,6 +85,9 @@ func (m *Manager) Read(ctx context.Context) (string, error) {
 			text, err = run(ctx, "", "xsel", "--clipboard", "--output")
 		}
 	default:
+		if !m.FallbackInternal {
+			return "", errors.New("no system clipboard available and fallback_internal is disabled")
+		}
 		return m.ReadInternal()
 	}
 	if err != nil {
@@ -85,18 +99,21 @@ func (m *Manager) Read(ctx context.Context) (string, error) {
 	return text, nil
 }
 func (m *Manager) Write(ctx context.Context, text string) error {
+	if m.Backend() == "Relay Clipboard" && !m.FallbackInternal {
+		return errors.New("no system clipboard available and fallback_internal is disabled")
+	}
 	if err := m.WriteInternal(text); err != nil {
 		return err
 	}
 	var err error
 	switch m.Backend() {
 	case "System Clipboard (Wayland)":
-		_, err = run(ctx, text, "wl-copy", "--type", "text/plain;charset=utf-8")
+		err = writeSystem(ctx, text, "wl-copy", "--type", "text/plain;charset=utf-8")
 	case "System Clipboard (X11)":
 		if available("xclip") {
-			_, err = run(ctx, text, "xclip", "-selection", "clipboard")
+			err = writeSystem(ctx, text, "xclip", "-selection", "clipboard")
 		} else {
-			_, err = run(ctx, text, "xsel", "--clipboard", "--input")
+			err = writeSystem(ctx, text, "xsel", "--clipboard", "--input")
 		}
 	}
 	if err != nil && !m.FallbackInternal {

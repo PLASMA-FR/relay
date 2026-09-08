@@ -1,0 +1,26 @@
+name: CI
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+          cache: true
+      - run: test -z "$(gofmt -l cmd internal)"
+      - run: go test -race ./...
+      - run: go vet ./...
+      - run: shellcheck install.sh uninstall.sh scripts/*.sh
+      - run: make build
+      - run: ./scripts/test-install.sh ./bin/relay
+      - run: make release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: relay-linux
+          path: |
+            dist/*.tar.gz
+            dist/checksums.txt

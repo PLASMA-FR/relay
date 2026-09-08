@@ -1,53 +1,57 @@
-# Implementation contracts
+# Architecture and local API
 
-Module: `github.com/PLASMA-FR/relay`, Go 1.25+ (os.Root available). Root owns
-model, config, ipc client, clipboard, cmd/relay, packaging and documentation.
+Relay is one Go binary with terminal, CLI and independent daemon entry points.
+Clients communicate through a private Unix socket and never open peer connections.
 
-Daemon owns internal/daemon and internal/tailscale. Public surface:
-`daemon.New(cfg config.Config) (*Daemon, error)` and `Run(ctx context.Context) error`.
-Config is passed by value. Unix HTTP IPC endpoints:
-`GET /v1/status` → model.Snapshot; `GET /v1/events` → newline-delimited snapshots,
-initial snapshot then changes, keepalive permitted (blank line);
-`POST /v1/send` model.SendRequest → model.Result;
-`POST /v1/action` model.Action → model.Result. Errors JSON `{error: string}`.
+```text
+TUI / CLI — private Unix socket — daemon — TLS 1.3 over Tailscale — peer
+```
+
+| Package | Responsibility |
+| --- | --- |
+| cmd/relay | CLI, pipeline input, daemon bootstrap and completion waiting |
+| config | Validated TOML and XDG paths |
+| ipc, model | Local client and JSON data model |
+| daemon | Authorization, discovery, persistent jobs/history, bounded events |
+| tailscale | Bounded local CLI status reads and address validation |
+| identity | Persistent Ed25519 identity and TLS certificate generation |
+| protocol, transfer | Binary frames, streaming, verified resume and publication |
+| tui | tview/tcell widgets, responsive layouts and asynchronous file browser |
+| clipboard | Optional Wayland/X11 tools and private internal clipboard |
+| service, doctor | Linux service lifecycle and diagnostics |
+
+## Private IPC v1
+
+HTTP travels only through a mode-0600 Unix socket in a private user-owned directory.
+This API has no TCP listener.
+
+| Request | Input | Response |
+| --- | --- | --- |
+| GET /v1/status | — | model.Snapshot |
+| GET /v1/events | — | Initial snapshot, then changed snapshots as NDJSON |
+| POST /v1/send | model.SendRequest | model.Result with queued transfer ID |
+| POST /v1/action | model.Action | model.Result |
+
 Actions: refresh, accept, reject, pause, resume, cancel, pair, trust, untrust,
-clipboard-copy, clipboard-show. Pair returns observed Peer/fingerprint without
-trusting. Trust requires the full observed fingerprint. Trust is directional:
-both devices must explicitly trust each other. No remote commands/URL launch.
-Snapshot includes history and pending incoming offers (`status=offered`).
-Transferring statuses: queued, preparing, offered, transferring, verifying,
-paused, interrupted, completed, cancelled, rejected, failed.
+clipboard-copy, clipboard-show and graceful local shutdown. Errors return a
+non-success HTTP status and an error string. Event streams use blank keepalives.
+Pairing observes identity; trust requires a verified full fingerprint.
 
-Root IPC client: `ipc.New(socket string) *Client`, `Status(ctx) (model.Snapshot,error)`,
-`Send(ctx, model.SendRequest) (model.Result,error)`, `Action(ctx,model.Action)
-(model.Result,error)`, `Watch(ctx, func(model.Snapshot)) error`.
+Snapshots separate unfinished jobs from terminal history. The TUI adds a small
+recent-completion list to active work while retaining separate full history.
+Payload data never travels through UI event streams.
 
-TUI owns internal/tui. `tui.Run(ctx context.Context, client *ipc.Client,
-cfg config.Config) error`. Use tview/tcell: event-driven incremental screen diff,
-first-class mouse. Integrate initial status and Watch with reconnect. Plain
-helper methods/model tests and tcell SimulationScreen for keyboard/mouse/resizing.
-Never call peer protocol directly. All user/peer filenames terminal-safe escaped.
+## Lifecycle and durability
 
-Transfer owner owns internal/identity, internal/protocol, internal/transfer;
-coordinate engine API directly with daemon owner. TLS 1.3 Ed25519 self-signed
-certificates and SHA256 SPKI pinning. Discovery only exposes bounded hello;
-application transfers require pinned identity and current trust. Versioned
-length-bounded binary frames; bounded streaming and verified resume. Store
-metadata atomically, partial payload on disk, safe extraction (reject symlinks
-for V1 and explain explicitly), no overwritten destinations. Parallelism bounded.
+The daemon holds a state-directory lock and owns peer cancellation. Job metadata,
+trust activation and incoming approval are persisted before dependent actions
+proceed. Failed trust activation cannot authorize a transfer. Revocation remains
+effective in memory if storage fails, with an explicit durability notice.
 
-Config root-owned fields (all public): Name string, Paths config.Paths
-(ConfigFile, StateDir, CacheDir, Socket string), Receive (Directory string,
-AutoAcceptTrusted bool, Conflict string, MaxBytes int64), UI (Mouse,VimKeys,ASCII
-bool), Clipboard (FallbackInternal bool), Network (TailscaleOnly bool, Port int,
-Listen string, MaxConcurrent int, DiscoverySeconds int). Listen permits explicit
-loopback only in non-tailnet integration tests; production never public binds.
-`config.Load(path string) (Config,error)`, `config.Default() Config`,
-`config.Ensure(Config) error`, `config.ExpandPath(string) string`.
+A background daemon outlives its client. User-service installation requests a
+graceful local shutdown, waits for its state lock, starts systemd and waits for
+IPC readiness. Clients reconnect after daemon restart.
 
-Clipboard root-owned: `clipboard.New(stateDir string) *Manager`,
-`Backend() string`, `Read(ctx) (string,error)`, `Write(ctx,string) error`,
-`ReadInternal() (string,error)`, `WriteInternal(string) error`.
-Incoming text updates only the Relay clipboard; no unsolicited system paste.
-
-Do not commit other agents' work. Root handles git commits after staged review.
+Progress is coalesced, and snapshots and asynchronous UI work are bounded.
+Blocking filesystem/network work stays outside the UI event loop. Remote framing
+and filesystem transaction boundaries are specified in [PROTOCOL.md](PROTOCOL.md).
