@@ -15,6 +15,10 @@ for arch in amd64 arm64; do
     install -m 0644 README.md LICENSE SECURITY.md config.example.toml "$work/$package/"
     install -m 0755 install.sh uninstall.sh "$work/$package/"
     cp -R docs "$work/$package/"
+    if [ -f mobile/README.md ]; then
+        mkdir "$work/$package/mobile"
+        install -m 0644 mobile/README.md "$work/$package/mobile/README.md"
+    fi
     find "$work/$package/docs" -type d -exec chmod 0755 {} +
     find "$work/$package/docs" -type f -exec chmod 0644 {} +
     tar --sort=name --mtime='UTC 2026-01-01' --owner=0 --group=0 --numeric-owner -C "$work" -cf "$work/package.tar" "$package"

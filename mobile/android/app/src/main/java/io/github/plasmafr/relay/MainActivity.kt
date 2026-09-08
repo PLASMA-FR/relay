@@ -18,6 +18,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.core.content.ContextCompat
 import androidx.core.net.toUri
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.google.zxing.client.android.Intents
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import io.github.plasmafr.relay.ui.IncomingShare
@@ -180,7 +181,7 @@ class MainActivity : ComponentActivity() {
                 },
                 onCopyInvite = { perform<String>(onSuccess = ::copyText) { repository.invite() } },
                 onScan = {
-                    scanner.launch(ScanOptions().setDesiredBarcodeFormats(ScanOptions.QR_CODE).setPrompt("Scan the pairing QR code on your other device").setBeepEnabled(false).setOrientationLocked(false))
+                    scanner.launch(pairingScanOptions())
                 },
                 onAction = { action, id ->
                     val receivingResume = action == "resume" && (state.transfers + state.history).any { it.id == id && it.direction == "receive" }
@@ -212,3 +213,11 @@ private fun isWebUrl(text: String): Boolean = runCatching {
     val uri = text.trim().toUri()
     uri.scheme in listOf("http", "https") && !uri.host.isNullOrBlank() && !text.trim().contains('\n')
 }.getOrDefault(false)
+
+/** Terminal QR codes can be light-on-dark; alternate polarity across camera frames. */
+internal fun pairingScanOptions(): ScanOptions = ScanOptions()
+    .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+    .setPrompt("Scan the pairing QR code on your other device")
+    .setBeepEnabled(false)
+    .setOrientationLocked(false)
+    .addExtra(Intents.Scan.SCAN_TYPE, Intents.Scan.MIXED_SCAN)
