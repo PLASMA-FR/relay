@@ -5,6 +5,15 @@ Relay devices over Tailscale. It uses the same authenticated, resumable v1 trans
 engine as the desktop application, with a native Android interface and a private
 inbox. There is no separate Relay account or Relay cloud service.
 
+<p>
+  <img src="../docs/screenshots/android/fixture-devices-light.png" width="280" alt="Relay Android device list in light mode" />
+  <img src="../docs/screenshots/android/fixture-transfers-dark.png" width="280" alt="Relay Android transfer progress and incoming approval in dark mode" />
+</p>
+
+These are actual emulator captures with fictional test devices and transfers.
+The [release startup capture](../docs/screenshots/android/release-app-startup.png)
+shows the real app's empty first-run state. See [validation](../docs/MOBILE-VALIDATION.md).
+
 The first Android app is version **0.2.0**, included with the **Relay 0.2.0**
 release. Existing desktop Relay 0.1.0 transfers remain protocol-compatible.
 The `relay mobile invite` and `relay mobile pair` convenience commands require an
@@ -231,7 +240,7 @@ After building the AAR, run Android checks from `mobile/android`:
 ```
 
 The second command needs an attached Android device or emulator. The
-[Android workflow](../.github/workflows/android.yml) configures an API 35 x86_64
+[Android workflow](https://github.com/PLASMA-FR/relay/actions/workflows/android.yml) configures an API 35 x86_64
 emulator, runs instrumentation, and collects APKs, reports, and available emulator
 screenshots. Instrumentation checks native initialization and interface behavior;
 it does not replace a physical-phone Tailscale transfer test. Consult the actual
