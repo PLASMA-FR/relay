@@ -77,8 +77,12 @@ func (d *Daemon) effectivePinLocked(id string) string {
 }
 
 func (d *Daemon) cancelPeerJobsLocked(id, reason string) {
+	d.pausePeerJobsLocked(id, reason, "")
+}
+
+func (d *Daemon) pausePeerJobsLocked(id, reason, keepFingerprint string) {
 	for jobID, j := range d.jobs {
-		if j.Transfer.PeerID != id || j.Transfer.Terminal() {
+		if j.Transfer.PeerID != id || j.Transfer.Terminal() || (keepFingerprint != "" && j.Fingerprint == keepFingerprint) {
 			continue
 		}
 		j.Transfer.Status = "paused"
@@ -97,10 +101,30 @@ func (d *Daemon) cancelPeerJobsLocked(id, reason string) {
 	}
 }
 
+// interruptPeerJobsLocked preserves resumable work during a temporary loss of
+// network authorization. A missing approval is cancellation, not user rejection.
+func (d *Daemon) interruptPeerJobsLocked(id string) {
+	for jobID, j := range d.jobs {
+		if j.Transfer.PeerID != id || j.Transfer.Terminal() || j.Transfer.Status == "paused" {
+			continue
+		}
+		j.Transfer.Status = "interrupted"
+		j.Transfer.Error = "Tailscale authorization temporarily unavailable"
+		j.Transfer.Updated = time.Now()
+		if stop := d.cancels[jobID]; stop != nil {
+			stop()
+		}
+		if stop := d.decisionStops[jobID]; stop != nil {
+			stop(errors.New("Tailscale authorization temporarily unavailable"))
+		}
+		d.engine.Cancel(jobID)
+	}
+}
+
 func (d *Daemon) clearMembersLocked() {
 	if d.cfg.Network.TrustTailnet {
-		for id := range d.autoPins {
-			d.cancelPeerJobsLocked(id, "Tailscale authorization unavailable")
+		for id := range d.peers {
+			d.interruptPeerJobsLocked(id)
 		}
 	}
 	d.members = map[string]tailscale.Device{}
@@ -119,10 +143,9 @@ func (d *Daemon) updateMembersLocked(status tailscale.Status) {
 			members[device.ID] = device
 		}
 	}
-	for id := range d.autoPins {
-		old, existed := d.members[id]
+	for id, peer := range d.peers {
 		current, exists := members[id]
-		if !exists || !existed || !deviceHasAddress(current, addressHost(d.peers[id].Address)) || !deviceHasAddress(old, addressHost(d.peers[id].Address)) {
+		if !exists || !deviceHasAddress(current, addressHost(peer.Address)) {
 			delete(d.autoPins, id)
 			if d.cfg.Network.TrustTailnet {
 				d.cancelPeerJobsLocked(id, "Device is no longer authorized by Tailscale")
@@ -173,6 +196,7 @@ func (d *Daemon) learnTailnetPeer(ctx context.Context, remote, fingerprint strin
 	if p.ID == "" {
 		p = model.Peer{ID: device.ID, Name: member.Hostname, Hostname: member.Hostname, Address: member.Addresses[0], OS: member.OS}
 	}
+	previousFingerprint := p.Fingerprint
 	if hello != nil {
 		if hello.Protocol != model.ProtocolVersion {
 			d.mu.Unlock()
@@ -181,6 +205,9 @@ func (d *Daemon) learnTailnetPeer(ctx context.Context, remote, fingerprint strin
 		applyHello(&p, *hello)
 	} else {
 		p.Fingerprint = fingerprint
+	}
+	if previousFingerprint != "" && previousFingerprint != fingerprint {
+		d.pausePeerJobsLocked(p.ID, "Device identity changed; create a new transfer", fingerprint)
 	}
 	p.Online, p.Relay, p.Error, p.Blocked = true, true, "", false
 	p.LastSeen = time.Now()

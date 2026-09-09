@@ -385,6 +385,13 @@ func (d *Daemon) action(r *http.Request, a model.Action) (model.Result, error) {
 				}
 			}
 		case "resume":
+			if d.cfg.Network.TrustTailnet {
+				observed := d.peers[j.Transfer.PeerID].Fingerprint
+				if observed != "" && observed != j.Fingerprint {
+					d.mu.Unlock()
+					return result, errors.New("device identity changed; create a new transfer")
+				}
+			}
 			if j.Transfer.Status == "completed" || j.Transfer.Status == "cancelled" || j.Transfer.Status == "rejected" {
 				d.mu.Unlock()
 				return result, errors.New("transfer has ended; start a new send")

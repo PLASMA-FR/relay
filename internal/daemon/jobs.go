@@ -194,7 +194,10 @@ func (d *Daemon) runJob(ctx context.Context, id string, p model.Peer) {
 	delete(d.cancels, id)
 	if j.Transfer.Status != "paused" && j.Transfer.Status != "cancelled" && j.Transfer.Status != "rejected" {
 		if err != nil {
-			if prepared == nil || permanentError(err) {
+			if ctx.Err() != nil || (d.cfg.Network.TrustTailnet && strings.Contains(err.Error(), "not trusted")) {
+				j.Transfer.Status = "interrupted"
+				j.Transfer.Retry++
+			} else if prepared == nil || permanentError(err) {
 				j.Transfer.Status = "failed"
 			} else if strings.Contains(err.Error(), "rejected") {
 				j.Transfer.Status = "rejected"
@@ -226,6 +229,8 @@ func (d *Daemon) runJob(ctx context.Context, id string, p model.Peer) {
 }
 
 func (d *Daemon) decide(ctx context.Context, fp string, offer transfer.Offer) error {
+	ctx, stopDecision := context.WithCancelCause(ctx)
+	defer stopDecision(nil)
 	encoded, err := json.Marshal(offer)
 	if err != nil {
 		return err
@@ -289,14 +294,24 @@ func (d *Daemon) decide(ctx context.Context, fp string, offer transfer.Offer) er
 	j.Transfer.Updated = now
 	ch := make(chan bool, 1)
 	d.decisions[offer.ID] = ch
+	d.decisionStops[offer.ID] = stopDecision
 	d.notifyLocked()
 	d.mu.Unlock()
-	defer func() { d.mu.Lock(); delete(d.decisions, offer.ID); d.mu.Unlock() }()
+	defer func() {
+		d.mu.Lock()
+		delete(d.decisions, offer.ID)
+		delete(d.decisionStops, offer.ID)
+		d.mu.Unlock()
+	}()
 	if err = d.persist(); err != nil {
 		return fmt.Errorf("persist incoming offer: %w", err)
 	}
 	if d.cfg.Receive.AutoAcceptTrusted || previouslyAccepted {
 		d.mu.Lock()
+		if ctx.Err() != nil {
+			d.mu.Unlock()
+			return context.Cause(ctx)
+		}
 		j.Accepted = true
 		j.Transfer.Status = "transferring"
 		d.notifyLocked()
@@ -310,6 +325,9 @@ func (d *Daemon) decide(ctx context.Context, fp string, offer transfer.Offer) er
 			d.mu.Unlock()
 			return fmt.Errorf("persist acceptance: %w", err)
 		}
+		if ctx.Err() != nil {
+			return context.Cause(ctx)
+		}
 		return nil
 	}
 	timer := time.NewTimer(10 * time.Minute)
@@ -321,7 +339,7 @@ func (d *Daemon) decide(ctx context.Context, fp string, offer transfer.Offer) er
 		}
 		return errors.New("transfer rejected by receiver")
 	case <-ctx.Done():
-		return ctx.Err()
+		return context.Cause(ctx)
 	case <-timer.C:
 		return errors.New("offer expired; accept promptly or enable auto_accept_trusted")
 	}

@@ -189,6 +189,16 @@ func TestTailnetKeyRotationNeverRetargetsQueuedJobs(t *testing.T) {
 	if d.jobs[first.ID].Fingerprint != old || d.jobs[second.ID].Fingerprint != newPin {
 		t.Fatal("rotation retargeted existing job")
 	}
+	if d.jobs[first.ID].Transfer.Status != "paused" || !strings.Contains(d.jobs[first.ID].Transfer.Error, "identity changed") {
+		t.Fatal("old-key job was not paused with recovery guidance")
+	}
+	if _, err := d.action(httptest.NewRequest("POST", "http://relay/v1/action", nil), model.Action{Action: "resume", ID: first.ID}); err == nil || !strings.Contains(err.Error(), "create a new transfer") {
+		t.Fatal("resume silently requeued an old-key transfer", err)
+	}
+	if d.jobs[first.ID].Transfer.Status != "paused" {
+		t.Fatal("old-key resume changed pause state")
+	}
+
 	if d.trusted(old) || !d.trusted(newPin) {
 		t.Fatal("rotation left wrong effective pin")
 	}
@@ -399,5 +409,145 @@ func TestTailnetBlockSurvivesManualModeAndVerifiedTrustClearsIt(t *testing.T) {
 				t.Fatal("manual trust/block state was not durably committed together")
 			}
 		})
+	}
+}
+
+func TestTailnetTemporaryLossPreservesQueuedWorkAndUserPause(t *testing.T) {
+	d, m := autoDaemon(t)
+	fp := strings.Repeat("a", 64)
+	if err := d.authorizePeer(context.Background(), "100.64.0.2:31000", fp); err != nil {
+		t.Fatal(err)
+	}
+	queued, err := d.send(model.SendRequest{Peer: m.ID, Kind: "text", Text: "retry me"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	paused, err := d.send(model.SendRequest{Peer: m.ID, Kind: "text", Text: "keep paused"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.action(httptest.NewRequest("POST", "http://relay/v1/action", nil), model.Action{Action: "pause", ID: paused.ID}); err != nil {
+		t.Fatal(err)
+	}
+	d.mu.Lock()
+	d.clearMembersLocked()
+	d.mu.Unlock()
+	if d.jobs[queued.ID].Transfer.Status != "interrupted" {
+		t.Fatal("temporary outage lost automatic retry eligibility")
+	}
+	if d.jobs[paused.ID].Transfer.Status != "paused" {
+		t.Fatal("temporary outage changed explicit user pause")
+	}
+	if d.trusted(fp) {
+		t.Fatal("temporary outage retained authorization")
+	}
+	d.mu.Lock()
+	d.updateMembersLocked(tailscale.Status{State: "Running", Peers: []tailscale.Device{m}})
+	d.mu.Unlock()
+	if err := d.authorizePeer(context.Background(), "100.64.0.2:31000", fp); err != nil {
+		t.Fatal(err)
+	}
+	if !d.trusted(fp) || d.jobs[queued.ID].Fingerprint != fp || d.jobs[queued.ID].Transfer.Status != "interrupted" {
+		t.Fatal("same-key recovery did not preserve resumable queue")
+	}
+	if d.jobs[paused.ID].Transfer.Status != "paused" {
+		t.Fatal("membership restoration unpaused user work")
+	}
+	d.mu.Lock()
+	d.updateMembersLocked(tailscale.Status{State: "Running"})
+	d.mu.Unlock()
+	if d.jobs[queued.ID].Transfer.Status != "paused" {
+		t.Fatal("explicit removal did not pause work")
+	}
+}
+
+func TestTailnetTemporaryLossCancelsOfferThenRetriesWithoutRejection(t *testing.T) {
+	ca, cb := testConfig(t, "desktop"), testConfig(t, "receiver")
+	ca.Network.TrustTailnet, cb.Network.TrustTailnet = true, true
+	cb.Receive.AutoAcceptTrusted = false
+	a, _ := startDaemon(t, ca)
+	b, _ := startDaemon(t, cb)
+	sa, sb := a.snapshot(), b.snapshot()
+	ma := tailscale.Device{ID: "desktop-node", Hostname: sa.Name, Addresses: []string{sa.Address}, Online: true}
+	mb := tailscale.Device{ID: "receiver-node", Hostname: sb.Name, Addresses: []string{sb.Address}, Online: true}
+	a.whoIs = func(context.Context, string) (tailscale.Device, error) { return mb, nil }
+	b.whoIs = func(context.Context, string) (tailscale.Device, error) { return ma, nil }
+	a.mu.Lock()
+	a.updateMembersLocked(tailscale.Status{State: "Running", Peers: []tailscale.Device{mb}})
+	a.peers[mb.ID] = model.Peer{ID: mb.ID, Name: mb.Hostname, Address: sb.Address, Online: true}
+	a.mu.Unlock()
+	b.mu.Lock()
+	b.updateMembersLocked(tailscale.Status{State: "Running", Peers: []tailscale.Device{ma}})
+	b.mu.Unlock()
+	a.probe(context.Background(), mb.ID)
+	result, err := a.send(model.SendRequest{Peer: mb.ID, Kind: "text", Text: "retry after Tailnet recovery"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitTransfer(t, b, result.ID, "offered")
+	b.mu.Lock()
+	b.clearMembersLocked()
+	b.mu.Unlock()
+	interrupted := waitTransfer(t, a, result.ID, "interrupted")
+	if strings.Contains(strings.ToLower(interrupted.Error), "rejected") {
+		t.Fatal("temporary outage was reported as receiver rejection")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		b.mu.Lock()
+		pending := len(b.decisions) + len(b.decisionStops)
+		b.mu.Unlock()
+		if pending == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("cancelled offer left a pending approval registered")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	b.mu.Lock()
+	status := b.jobs[result.ID].Transfer.Status
+	b.mu.Unlock()
+	if status != "interrupted" {
+		t.Fatalf("receiver did not remain resumable: %s", status)
+	}
+	b.mu.Lock()
+	b.updateMembersLocked(tailscale.Status{State: "Running", Peers: []tailscale.Device{ma}})
+	b.mu.Unlock()
+	waitTransfer(t, b, result.ID, "offered")
+	if _, err := b.action(httptest.NewRequest("POST", "http://relay/v1/action", nil), model.Action{Action: "accept", ID: result.ID}); err != nil {
+		t.Fatal(err)
+	}
+	waitTransfer(t, a, result.ID, "completed")
+	waitTransfer(t, b, result.ID, "completed")
+}
+
+func TestTailnetLossDuringPreparationRemainsInterrupted(t *testing.T) {
+	d, m := autoDaemon(t)
+	fp := strings.Repeat("a", 64)
+	if err := d.authorizePeer(context.Background(), "100.64.0.2:31000", fp); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(t.TempDir(), "queued.txt")
+	if err := os.WriteFile(source, []byte("retry preparation"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := d.send(model.SendRequest{Peer: m.ID, Kind: "file", Paths: []string{source}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	d.mu.Lock()
+	d.jobs[result.ID].Transfer.Status = "preparing"
+	d.cancels[result.ID] = cancel
+	peer := d.peers[m.ID]
+	d.clearMembersLocked()
+	d.mu.Unlock()
+	d.runJob(ctx, result.ID, peer)
+	if d.jobs[result.ID].Transfer.Status != "interrupted" {
+		t.Fatalf("cancelled preparation became %s", d.jobs[result.ID].Transfer.Status)
+	}
+	if d.jobs[result.ID].Fingerprint != fp {
+		t.Fatal("cancelled preparation changed queued identity")
 	}
 }

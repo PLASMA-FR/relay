@@ -64,6 +64,7 @@ type Daemon struct {
 	jobs             map[string]*job
 	cancels          map[string]context.CancelFunc
 	decisions        map[string]chan bool
+	decisionStops    map[string]context.CancelCauseFunc
 	subscribers      map[chan struct{}]struct{}
 	state, address   string
 	notices          []string
@@ -85,7 +86,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	if err != nil {
 		return nil, err
 	}
-	d := &Daemon{cfg: cfg, identity: id, clipboard: clipboard.New(cfg.Paths.StateDir), peers: map[string]model.Peer{}, trust: map[string]string{}, autoPins: map[string]string{}, blocked: map[string]bool{}, members: map[string]tailscale.Device{}, whoIs: tailscale.WhoIs, readStatus: tailscale.Read, trustPending: map[string]bool{}, trustBefore: map[string]string{}, jobs: map[string]*job{}, cancels: map[string]context.CancelFunc{}, decisions: map[string]chan bool{}, subscribers: map[chan struct{}]struct{}{}, state: "Starting", wake: make(chan struct{}, 1), refresh: make(chan struct{}, 1)}
+	d := &Daemon{cfg: cfg, identity: id, clipboard: clipboard.New(cfg.Paths.StateDir), peers: map[string]model.Peer{}, trust: map[string]string{}, autoPins: map[string]string{}, blocked: map[string]bool{}, members: map[string]tailscale.Device{}, whoIs: tailscale.WhoIs, readStatus: tailscale.Read, trustPending: map[string]bool{}, trustBefore: map[string]string{}, jobs: map[string]*job{}, cancels: map[string]context.CancelFunc{}, decisions: map[string]chan bool{}, decisionStops: map[string]context.CancelCauseFunc{}, subscribers: map[chan struct{}]struct{}{}, state: "Starting", wake: make(chan struct{}, 1), refresh: make(chan struct{}, 1)}
 	if err := d.load(); err != nil {
 		return nil, err
 	}
