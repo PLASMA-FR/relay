@@ -37,9 +37,10 @@ type job struct {
 	OfferDigest string            `json:"offer_digest,omitempty"`
 }
 type diskState struct {
-	Trust map[string]string `json:"trust"`
-	Jobs  map[string]*job   `json:"jobs"`
-	Peers []model.Peer      `json:"peers"`
+	Trust   map[string]string `json:"trust"`
+	Blocked map[string]bool   `json:"blocked,omitempty"`
+	Jobs    map[string]*job   `json:"jobs"`
+	Peers   []model.Peer      `json:"peers"`
 }
 type Daemon struct {
 	cfg              config.Config
@@ -49,6 +50,14 @@ type Daemon struct {
 	mu               sync.Mutex
 	peers            map[string]model.Peer
 	trust            map[string]string
+	autoPins         map[string]string
+	blocked          map[string]bool
+	blockPendingID   string
+	blockBefore      map[string]bool
+	members          map[string]tailscale.Device
+	membersUntil     time.Time
+	whoIs            func(context.Context, string) (tailscale.Device, error)
+	readStatus       func(context.Context) (tailscale.Status, error)
 	trustPending     map[string]bool
 	trustBefore      map[string]string
 	durabilityNotice string
@@ -76,13 +85,13 @@ func New(cfg config.Config) (*Daemon, error) {
 	if err != nil {
 		return nil, err
 	}
-	d := &Daemon{cfg: cfg, identity: id, clipboard: clipboard.New(cfg.Paths.StateDir), peers: map[string]model.Peer{}, trust: map[string]string{}, trustPending: map[string]bool{}, trustBefore: map[string]string{}, jobs: map[string]*job{}, cancels: map[string]context.CancelFunc{}, decisions: map[string]chan bool{}, subscribers: map[chan struct{}]struct{}{}, state: "Starting", wake: make(chan struct{}, 1), refresh: make(chan struct{}, 1)}
+	d := &Daemon{cfg: cfg, identity: id, clipboard: clipboard.New(cfg.Paths.StateDir), peers: map[string]model.Peer{}, trust: map[string]string{}, autoPins: map[string]string{}, blocked: map[string]bool{}, members: map[string]tailscale.Device{}, whoIs: tailscale.WhoIs, readStatus: tailscale.Read, trustPending: map[string]bool{}, trustBefore: map[string]string{}, jobs: map[string]*job{}, cancels: map[string]context.CancelFunc{}, decisions: map[string]chan bool{}, subscribers: map[chan struct{}]struct{}{}, state: "Starting", wake: make(chan struct{}, 1), refresh: make(chan struct{}, 1)}
 	if err := d.load(); err != nil {
 		return nil, err
 	}
 	d.clipboard.FallbackInternal = cfg.Clipboard.FallbackInternal
 	host, _ := os.Hostname()
-	d.engine, err = transfer.New(transfer.Options{Identity: id, StateDir: cfg.Paths.StateDir, ReceiveDir: cfg.Receive.Directory, Conflict: cfg.Receive.Conflict, MaxBytes: cfg.Receive.MaxBytes, Hello: protocol.Hello{Name: cfg.Name, Hostname: host, OS: runtime.GOOS, Arch: runtime.GOARCH, Version: model.Version, Protocol: model.ProtocolVersion, Capabilities: []string{"files", "directories", "text", "url", "sha256", "resume"}, Fingerprint: id.Fingerprint}, Trusted: d.trusted, Decide: d.decide, Progress: d.progress})
+	d.engine, err = transfer.New(transfer.Options{Identity: id, StateDir: cfg.Paths.StateDir, ReceiveDir: cfg.Receive.Directory, Conflict: cfg.Receive.Conflict, MaxBytes: cfg.Receive.MaxBytes, Hello: protocol.Hello{Name: cfg.Name, Hostname: host, OS: runtime.GOOS, Arch: runtime.GOARCH, Version: model.Version, Protocol: model.ProtocolVersion, Capabilities: []string{"files", "directories", "text", "url", "sha256", "resume"}, Fingerprint: id.Fingerprint}, Trusted: d.trusted, AuthorizePeer: d.authorizePeer, PeerDirectory: d.peerDirectory, Decide: d.decide, Progress: d.progress})
 	return d, err
 }
 
@@ -111,6 +120,9 @@ func (d *Daemon) load() error {
 	var s diskState
 	if err = json.Unmarshal(b, &s); err != nil {
 		return fmt.Errorf("read daemon state: %w (restore daemon.json from backup; identity is separate)", err)
+	}
+	if s.Blocked != nil {
+		d.blocked = s.Blocked
 	}
 	if s.Trust != nil {
 		d.trust = s.Trust
@@ -166,7 +178,11 @@ func (d *Daemon) persistPending(commitID string) error {
 			savedTrust[id] = pin
 		}
 	}
-	s := diskState{Trust: savedTrust, Jobs: d.jobs}
+	savedBlocked := d.blocked
+	if d.blockPendingID != "" && d.blockPendingID != commitID {
+		savedBlocked = d.blockBefore
+	}
+	s := diskState{Trust: savedTrust, Blocked: savedBlocked, Jobs: d.jobs}
 	for _, p := range d.peers {
 		s.Peers = append(s.Peers, p)
 	}
@@ -216,6 +232,10 @@ func (d *Daemon) persistPending(commitID string) error {
 		if commitID != "" {
 			delete(d.trustPending, commitID)
 			delete(d.trustBefore, commitID)
+			if d.blockPendingID == commitID {
+				d.blockPendingID = ""
+				d.blockBefore = nil
+			}
 		}
 		d.durabilityNotice = ""
 		d.notifyLocked()
@@ -249,8 +269,8 @@ func signal(ch chan struct{}) {
 func (d *Daemon) trusted(fp string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	for id, p := range d.trust {
-		if fp != "" && p == fp && !d.trustPending[id] {
+	for id := range d.peers {
+		if fp != "" && d.effectivePinLocked(id) == fp {
 			return true
 		}
 	}
@@ -261,11 +281,16 @@ func (d *Daemon) snapshot() model.Snapshot {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	s := model.Snapshot{Version: model.Version, Name: d.cfg.Name, Fingerprint: d.identity.Fingerprint, Tailscale: d.state, Address: d.address, ReceiveDirectory: d.cfg.Receive.Directory, ClipboardBackend: d.clipboard.Backend(), Peers: []model.Peer{}, Transfers: []model.Transfer{}, History: []model.Transfer{}, Notices: append([]string(nil), d.notices...)}
+	s.TrustMode = "manual"
+	if d.cfg.Network.TrustTailnet {
+		s.TrustMode = "tailnet"
+	}
 	if d.durabilityNotice != "" {
 		s.Notices = append(s.Notices, d.durabilityNotice)
 	}
 	for _, p := range d.peers {
-		p.Trusted = d.trust[p.ID] != "" && d.trust[p.ID] == p.Fingerprint && !d.trustPending[p.ID]
+		p.Trusted = p.Fingerprint != "" && d.effectivePinLocked(p.ID) == p.Fingerprint
+		p.Blocked = d.blockedLocked(p.ID)
 		s.Peers = append(s.Peers, p)
 	}
 	sort.Slice(s.Peers, func(i, j int) bool {
@@ -369,10 +394,11 @@ func (d *Daemon) discover(ctx context.Context) {
 		d.bind(ctx, address)
 		return
 	}
-	status, err := tailscale.Read(ctx)
+	status, err := d.readStatus(ctx)
 	if err != nil {
 		d.mu.Lock()
 		d.state = "Unavailable"
+		d.clearMembersLocked()
 		d.notices = []string{err.Error()}
 		for id, p := range d.peers {
 			p.Relay = false
@@ -390,6 +416,7 @@ func (d *Daemon) discover(ctx context.Context) {
 	}
 	d.mu.Lock()
 	d.state = status.State
+	d.updateMembersLocked(status)
 	d.notices = nil
 	d.address = ""
 	if len(status.Self.Addresses) > 0 {
@@ -397,6 +424,9 @@ func (d *Daemon) discover(ctx context.Context) {
 	}
 	seen := map[string]bool{}
 	for _, device := range status.Peers {
+		if len(device.Addresses) == 0 {
+			continue
+		}
 		seen[device.ID] = true
 		p := d.peers[device.ID]
 		p.ID = device.ID
@@ -448,30 +478,50 @@ func (d *Daemon) discover(ctx context.Context) {
 func (d *Daemon) probe(ctx context.Context, id string) {
 	d.mu.Lock()
 	p, ok := d.peers[id]
+	blocked := d.blockedLocked(id)
 	d.mu.Unlock()
-	if !ok {
+	if !ok || (d.cfg.Network.TrustTailnet && blocked) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
+	address := d.peerAddress(p)
 	start := time.Now()
-	hello, err := d.engine.Probe(ctx, d.peerAddress(p))
+	hello, err := d.engine.Probe(ctx, address)
+	if d.cfg.Network.TrustTailnet && err == nil {
+		if err = d.learnTailnetPeer(ctx, address, hello.Fingerprint, &hello, id); err == nil {
+			for _, capability := range hello.Capabilities {
+				if capability == protocol.PeerDirectoryCapability {
+					_, _ = d.engine.ExchangePeers(ctx, address, hello.Fingerprint, d.directoryHints())
+					break
+				}
+			}
+		}
+		if err == nil {
+			d.mu.Lock()
+			p = d.peers[id]
+			p.LatencyMS = time.Since(start).Milliseconds()
+			d.peers[id] = p
+			d.notifyLocked()
+			d.mu.Unlock()
+			return
+		}
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	p = d.peers[id]
-	if err != nil && hello.Fingerprint == "" {
+	// A completed probe may not update a peer whose discovery address changed.
+	if d.peerAddress(p) != address {
+		return
+	}
+	if err != nil && (hello.Fingerprint == "" || d.cfg.Network.TrustTailnet) {
 		p.Relay = false
-		p.Error = "Relay unavailable; start relay daemon on this device"
-	} else {
-		p.Fingerprint = hello.Fingerprint
-		p.Name = limitText(hello.Name, 128)
-		p.Arch = limitText(hello.Arch, 32)
-		p.Version = limitText(hello.Version, 32)
-		p.Protocol = hello.Protocol
-		p.Capabilities = nil
-		for _, capability := range hello.Capabilities[:min(len(hello.Capabilities), 32)] {
-			p.Capabilities = append(p.Capabilities, limitText(capability, 64))
+		p.Error = "Relay unavailable; start Relay on this device"
+		if d.cfg.Network.TrustTailnet {
+			delete(d.autoPins, id)
 		}
+	} else {
+		applyHello(&p, hello)
 		p.Relay = err == nil && hello.Protocol == model.ProtocolVersion
 		p.LatencyMS = time.Since(start).Milliseconds()
 		p.LastSeen = time.Now()
@@ -486,6 +536,18 @@ func (d *Daemon) probe(ctx context.Context, id string) {
 	}
 	d.peers[id] = p
 	d.notifyLocked()
+}
+
+func applyHello(p *model.Peer, hello protocol.Hello) {
+	p.Fingerprint = hello.Fingerprint
+	p.Name = limitText(hello.Name, 128)
+	p.Arch = limitText(hello.Arch, 32)
+	p.Version = limitText(hello.Version, 32)
+	p.Protocol = hello.Protocol
+	p.Capabilities = nil
+	for _, capability := range hello.Capabilities[:min(len(hello.Capabilities), 32)] {
+		p.Capabilities = append(p.Capabilities, limitText(capability, 64))
+	}
 }
 func (d *Daemon) peerAddress(p model.Peer) string {
 	if _, _, err := net.SplitHostPort(p.Address); err == nil {

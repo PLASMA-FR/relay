@@ -30,6 +30,7 @@ func testConfig(t *testing.T, name string) config.Config {
 	c.Paths = config.Paths{ConfigFile: filepath.Join(root, "config", "config.toml"), StateDir: filepath.Join(root, "state"), CacheDir: filepath.Join(root, "cache"), Socket: filepath.Join(root, "run", "relay.sock")}
 	c.Receive.Directory = filepath.Join(root, "inbox")
 	c.Network.TailscaleOnly = false
+	c.Network.TrustTailnet = false
 	c.Network.Listen = "127.0.0.1:0"
 	return c
 }

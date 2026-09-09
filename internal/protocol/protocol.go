@@ -23,7 +23,21 @@ const (
 	CompleteFrame
 	ErrorFrame
 	HeartbeatFrame
+	PeersFrame
 )
+
+const PeerDirectoryCapability = "peer-directory-v1"
+const MaxPeerHints = 256
+
+type PeerHint struct {
+	Name    string `json:"name"`
+	Address string `json:"address"`
+	OS      string `json:"os"`
+}
+
+type PeerDirectory struct {
+	Peers []PeerHint `json:"peers"`
+}
 
 type Hello struct {
 	Name         string   `json:"name"`
@@ -79,7 +93,7 @@ func Read(r io.Reader) (Frame, error) {
 	if h[0] != 'R' || h[1] != 'L' || h[2] != Version {
 		return Frame{}, errors.New("unsupported Relay protocol")
 	}
-	if h[3] < HelloFrame || h[3] > HeartbeatFrame {
+	if h[3] < HelloFrame || h[3] > PeersFrame {
 		return Frame{}, errors.New("unknown frame type")
 	}
 	n := binary.BigEndian.Uint32(h[4:])

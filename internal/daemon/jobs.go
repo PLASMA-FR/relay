@@ -80,10 +80,10 @@ func (d *Daemon) send(req model.SendRequest) (model.Result, error) {
 		d.mu.Unlock()
 		return model.Result{}, err
 	}
-	pin := d.trust[p.ID]
-	if pin == "" || pin != p.Fingerprint || d.trustPending[p.ID] {
+	pin := d.effectivePinLocked(p.ID)
+	if pin == "" || pin != p.Fingerprint {
 		d.mu.Unlock()
-		return model.Result{}, errors.New("device is not trusted; run relay pair, verify its fingerprint, then relay trust on both devices")
+		return model.Result{}, errors.New("device is not trusted or is blocked; check Tailscale connectivity and trust settings")
 	}
 	pending := 0
 	for _, j := range d.jobs {
@@ -148,7 +148,7 @@ func (d *Daemon) scheduler(ctx context.Context) {
 				continue
 			}
 			p, exists := d.peers[t.PeerID]
-			if !exists || !p.Online || !p.Relay || d.trustPending[p.ID] || d.trust[p.ID] != j.Fingerprint || p.Fingerprint != j.Fingerprint {
+			if !exists || !p.Online || !p.Relay || d.effectivePinLocked(p.ID) != j.Fingerprint || p.Fingerprint != j.Fingerprint {
 				continue
 			}
 			delay := time.Duration(1<<min(t.Retry, 5)) * time.Second
@@ -234,8 +234,8 @@ func (d *Daemon) decide(ctx context.Context, fp string, offer transfer.Offer) er
 	digest := hex.EncodeToString(hash[:])
 	d.mu.Lock()
 	var peer model.Peer
-	for id, pin := range d.trust {
-		if pin == fp && !d.trustPending[id] {
+	for id := range d.peers {
+		if fp != "" && d.effectivePinLocked(id) == fp {
 			peer = d.peers[id]
 			break
 		}

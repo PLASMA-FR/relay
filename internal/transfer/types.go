@@ -62,6 +62,8 @@ type Options struct {
 	Trusted                        func(string) bool
 	Decide                         func(context.Context, string, Offer) error
 	Progress                       func(Event)
+	AuthorizePeer                  func(context.Context, string, string) error
+	PeerDirectory                  func(context.Context, string, string, []protocol.PeerHint) ([]protocol.PeerHint, error)
 }
 
 func NewID() string {

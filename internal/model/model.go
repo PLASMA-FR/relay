@@ -6,7 +6,7 @@ import "time"
 
 const ProtocolVersion = 1
 
-var Version = "0.2.0"
+var Version = "0.3.0"
 
 type Peer struct {
 	ID           string    `json:"id"`
@@ -22,6 +22,7 @@ type Peer struct {
 	Capabilities []string  `json:"capabilities,omitempty"`
 	Fingerprint  string    `json:"fingerprint,omitempty"`
 	Trusted      bool      `json:"trusted"`
+	Blocked      bool      `json:"blocked"`
 	LastSeen     time.Time `json:"last_seen"`
 	LatencyMS    int64     `json:"latency_ms,omitempty"`
 	Error        string    `json:"error,omitempty"`
@@ -54,6 +55,7 @@ func (t Transfer) Terminal() bool {
 }
 
 type Snapshot struct {
+	TrustMode        string     `json:"trust_mode"`
 	Version          string     `json:"version"`
 	Name             string     `json:"name"`
 	Fingerprint      string     `json:"fingerprint"`

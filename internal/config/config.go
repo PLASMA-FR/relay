@@ -29,6 +29,7 @@ type Clipboard struct {
 }
 type Network struct {
 	TailscaleOnly    bool   `toml:"tailscale_only"`
+	TrustTailnet     bool   `toml:"trust_tailnet"`
 	Port             int    `toml:"port"`
 	Listen           string `toml:"listen"`
 	MaxConcurrent    int    `toml:"max_concurrent"`
@@ -77,7 +78,7 @@ func Default() Config {
 	return Config{Name: name, Paths: Paths{cf, state, cache, socket},
 		Receive: Receive{Directory: dest, AutoAcceptTrusted: true, Conflict: "rename", MaxBytes: 1 << 40},
 		UI:      UI{Mouse: true, VimKeys: true}, Clipboard: Clipboard{FallbackInternal: true},
-		Network: Network{TailscaleOnly: true, Port: 7331, MaxConcurrent: 3, DiscoverySeconds: 15}}
+		Network: Network{TailscaleOnly: true, TrustTailnet: true, Port: 7331, MaxConcurrent: 3, DiscoverySeconds: 15}}
 }
 
 func ExpandPath(s string) string {

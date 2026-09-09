@@ -70,6 +70,17 @@ func New(o Options) (*Engine, error) {
 	}
 	o.Hello.Protocol = protocol.Version
 	o.Hello.Fingerprint = o.Identity.Fingerprint
+	if o.PeerDirectory != nil {
+		found := false
+		for _, capability := range o.Hello.Capabilities {
+			if capability == protocol.PeerDirectoryCapability {
+				found = true
+			}
+		}
+		if !found {
+			o.Hello.Capabilities = append(append([]string(nil), o.Hello.Capabilities...), protocol.PeerDirectoryCapability)
+		}
+	}
 	return &Engine{opts: o, active: map[string]net.Conn{}}, nil
 }
 func (e *Engine) Cancel(id string) bool {
@@ -166,8 +177,37 @@ func (e *Engine) Handle(ctx context.Context, c *tls.Conn) (err error) {
 			_ = protocol.Write(c, protocol.ErrorFrame, []byte(err.Error()))
 		}
 	}()
+	if e.opts.AuthorizePeer != nil {
+		if err = e.opts.AuthorizePeer(ctx, c.RemoteAddr().String(), fp); err != nil {
+			return err
+		}
+	}
 	if !e.trusted(fp) {
 		return errors.New("peer is not trusted; verify fingerprints and trust on both devices")
+	}
+	if first.Type == protocol.PeersFrame {
+		if e.opts.PeerDirectory == nil {
+			return errors.New("peer directory is not supported")
+		}
+		var request protocol.PeerDirectory
+		if err = json.Unmarshal(first.Data, &request); err != nil {
+			return errors.New("invalid peer directory")
+		}
+		if err = protocol.ValidatePeerHints(request.Peers); err != nil {
+			return err
+		}
+		var peers []protocol.PeerHint
+		peers, err = e.opts.PeerDirectory(ctx, c.RemoteAddr().String(), fp, request.Peers)
+		if err != nil {
+			return err
+		}
+		if err = protocol.ValidatePeerHints(peers); err != nil {
+			return err
+		}
+		if !e.trusted(fp) {
+			return errors.New("peer authorization revoked")
+		}
+		return protocol.WriteJSON(c, protocol.PeersFrame, protocol.PeerDirectory{Peers: peers})
 	}
 	if first.Type != protocol.OfferFrame {
 		return errors.New("expected transfer offer")

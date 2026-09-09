@@ -210,6 +210,9 @@ func (d *Daemon) action(r *http.Request, a model.Action) (model.Result, error) {
 		}
 		return result, d.clipboard.Write(r.Context(), a.Text)
 	case "pair", "trust", "untrust":
+		if d.cfg.Network.TrustTailnet {
+			return d.tailnetTrustAction(r, a)
+		}
 		if a.Action != "pair" {
 			d.trustMu.Lock()
 			defer d.trustMu.Unlock()
@@ -244,6 +247,15 @@ func (d *Daemon) action(r *http.Request, a model.Action) (model.Result, error) {
 			d.trustPending[p.ID] = true
 			d.trustBefore[p.ID] = previousPin
 			d.trust[p.ID] = fingerprint
+			d.blockPendingID = p.ID
+			d.blockBefore = make(map[string]bool, len(d.blocked))
+			for key, value := range d.blocked {
+				d.blockBefore[key] = value
+			}
+			for _, key := range d.blockKeysLocked(p) {
+				delete(d.blocked, key)
+			}
+			p.Blocked = false
 			p.Trusted = true
 			d.peers[p.ID] = p
 			result.Message = "Trusted; repeat pairing on the other device to enable mutual transfer"
@@ -282,13 +294,17 @@ func (d *Daemon) action(r *http.Request, a model.Action) (model.Result, error) {
 			if a.Action == "trust" {
 				delete(d.trustPending, p.ID)
 				delete(d.trustBefore, p.ID)
+				d.blocked = d.blockBefore
+				d.blockBefore = nil
+				d.blockPendingID = ""
 				if previousPin == "" {
 					delete(d.trust, p.ID)
 				} else {
 					d.trust[p.ID] = previousPin
 				}
 				current := d.peers[p.ID]
-				current.Trusted = previousPin != "" && previousPin == current.Fingerprint
+				current.Blocked = d.blockedLocked(p.ID)
+				current.Trusted = previousPin != "" && previousPin == current.Fingerprint && !current.Blocked
 				d.peers[p.ID] = current
 				d.durabilityNotice = "Trust change was not enabled because it could not be saved. Fix state-directory permissions or free disk space, then retry."
 			} else {
