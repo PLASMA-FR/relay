@@ -39,6 +39,11 @@ func (a *app) mobileCommand() *cobra.Command {
 			}
 			fmt.Fprintln(a.out, q.ToSmallString(false))
 		}
+		if s.TrustMode == "tailnet" {
+			fmt.Fprintln(a.out, "\nPairing is not required. Relay devices appear automatically through Tailscale.")
+			fmt.Fprintln(a.out, "This optional connection link can help a phone find its first device.")
+			return nil
+		}
 		fmt.Fprintln(a.out, "\nIn Relay on Android: Add device → scan or paste this link, then confirm trust.")
 		fmt.Fprintln(a.out, "Enable receiving on the phone. Pair its invitation here with: relay mobile pair 'LINK'")
 		return nil

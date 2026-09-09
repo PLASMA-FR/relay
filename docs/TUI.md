@@ -10,11 +10,16 @@ Directory selections include their contents. Selection survives navigation, so
 files from several directories can travel together. Selecting a parent and its
 child sends that content only once.
 
-Previously trusted devices can receive queued files, clipboard content, text,
-and URLs while offline. Relay confirms the queue after submission and sends
-when the device's daemon becomes reachable again. Keep selected source files
-in place until the transfer finishes. A stored fingerprint and current trust
-are required; new or changed identities must be verified before sending.
+With Relay 0.3, devices on your Tailscale network connect automatically. Run
+Relay on each device, select one marked **Tailnet**, and send without pairing.
+The default policy includes every Tailscale-visible device allowed by network
+rules, including shared devices, subject to your local blocks.
+
+Relay keeps submitted work in its durable queue. Keep selected source files in
+place until the transfer finishes. Automatic trust depends on current verified
+Tailscale membership; discovery refreshes it after reconnection or restart. A
+new Relay key can be learned automatically, but an existing queued job keeps its
+original key. Start a new send to use a changed identity.
 
 Transfers keeps the five most recent completions below active transfers, with
 verified results marked, so quick sends remain visible. Press **H** for the
@@ -73,15 +78,22 @@ entries; enter a more specific path if needed.
 
 ## Receiving and identity
 
-An incoming offer opens an Accept / Reject dialog when no other dialog is in
-use. Accept has initial focus. Esc dismisses the prompt without rejecting the
+When `receive.auto_accept_trusted = false`, an incoming offer opens an
+Accept / Reject dialog when no other dialog is in use. Accept has initial focus. Esc dismisses the prompt without rejecting the
 offer; it stays in Transfers. Relay prompts only once per offer per TUI session.
 The status bar also counts offers awaiting approval. Trusted auto-accept is
 controlled by the daemon's receive configuration.
 
-Device details show the full fingerprint. Compare it with `relay status` on the
-other device before checking the comparison box and granting trust. Repeat on
-both devices. Revocation is available in the same device dialog.
+Default device details show automatic **Tailnet** access and **Block** /
+**Unblock** actions. Blocking stops active transfers and survives discovery,
+restart, and a switch to manual trust. Unblocking in automatic mode requires no
+fingerprint. File Accept / Reject remains separate from device authorization.
+
+For optional manual trust, set `network.trust_tailnet = false` and restart the
+daemon. Device details then expose the full fingerprint and comparison control.
+Compare it with `relay status` on the actual other device before granting trust,
+and repeat in the reverse direction. A verified manual grant can clear an
+existing device block.
 
 ## SSH and compact terminals
 
@@ -106,7 +118,8 @@ control sequences, bidirectional overrides, and widget markup are not executed.
 `go test -race ./internal/tui` exercises tcell SimulationScreen rendering at
 28, 48, 80, and 150 columns; real event-loop keyboard, mouse, and resize events;
 file checkbox hit detection; multi-directory selection; offline trusted queues;
-unpaired and unreachable send guidance; trust confirmation;
+automatic Tailnet send guidance; unreachable-device guidance; manual trust
+confirmation and automatic Block / Unblock actions;
 search; incoming approval; clipboard labels; terminal escaping; color/ASCII
 fallbacks; and shutdown. These simulations supplement real terminal testing;
 they do not claim physical validation of every terminal emulator or GUI backend.

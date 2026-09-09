@@ -1,5 +1,5 @@
 GO ?= go
-VERSION ?= 0.2.0
+VERSION ?= 0.3.0
 LDFLAGS = -s -w -X github.com/PLASMA-FR/relay/internal/model.Version=$(VERSION)
 .PHONY: build test race vet fmt check bench large-test install release clean
 build:

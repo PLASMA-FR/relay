@@ -154,6 +154,9 @@ func (a *app) command() *cobra.Command {
 			return a.printJSON(s)
 		}
 		fmt.Fprintf(a.out, "RELAY %s · %s\nTailscale  %s  %s\nInbox      %s\nClipboard  %s\nIdentity   %s\n", safe(s.Version), safe(s.Name), safe(s.Tailscale), safe(s.Address), safe(s.ReceiveDirectory), safe(s.ClipboardBackend), safe(s.Fingerprint))
+		if s.TrustMode == "tailnet" {
+			fmt.Fprintln(a.out, "Access     Automatic Tailscale trust · no pairing")
+		}
 		active := 0
 		for _, t := range s.Transfers {
 			if !t.Terminal() {
@@ -185,8 +188,17 @@ func (a *app) command() *cobra.Command {
 				state = "Relay ready"
 			}
 			trust := "unpaired"
+			if s.TrustMode == "tailnet" {
+				trust = "waiting for Relay"
+			}
 			if p.Trusted {
 				trust = "trusted"
+				if s.TrustMode == "tailnet" {
+					trust = "Tailnet"
+				}
+			}
+			if p.Blocked {
+				trust = "blocked"
 			}
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", safe(p.Name), safe(p.Address), state, trust, safe(p.Version))
 		}
@@ -339,8 +351,9 @@ func (a *app) command() *cobra.Command {
 			return a.result(r)
 		})
 	}
-	add("pair DEVICE", "Inspect a device identity before pairing", cobra.ExactArgs(1), func(c *cobra.Command, args []string) error {
-		if e := a.ensureDaemon(c.Context()); e != nil {
+	add("pair DEVICE", "Inspect a device identity (optional in Tailnet mode)", cobra.ExactArgs(1), func(c *cobra.Command, args []string) error {
+		s, e := a.status(c.Context())
+		if e != nil {
 			return e
 		}
 		r, e := a.client.Action(c.Context(), model.Action{Action: "pair", Peer: args[0]})
@@ -353,11 +366,18 @@ func (a *app) command() *cobra.Command {
 		if r.Peer == nil {
 			return errors.New("daemon did not return peer identity")
 		}
+		if s.TrustMode == "tailnet" {
+			fmt.Fprintf(a.out, "%s\nSHA-256  %s\n\nTailscale devices connect automatically; no pairing is needed.\n", safe(r.Peer.Name), safe(r.Peer.Fingerprint))
+			if r.Peer.Blocked {
+				fmt.Fprintf(a.out, "This device is blocked. Use relay trust %s to unblock it.\n", safe(args[0]))
+			}
+			return nil
+		}
 		fmt.Fprintf(a.out, "%s\nSHA-256  %s\n\nCompare this fingerprint with 'relay status' on that device.\nThen run: relay trust %s --fingerprint %s\nRepeat in the other direction to enable sending.\n", safe(r.Peer.Name), safe(r.Peer.Fingerprint), safe(args[0]), safe(r.Peer.Fingerprint))
 		return nil
 	})
 	var fingerprint string
-	trust := add("trust [DEVICE]", "List trusted devices or trust a verified fingerprint", cobra.MaximumNArgs(1), func(c *cobra.Command, args []string) error {
+	trust := add("trust [DEVICE]", "List authorized devices, unblock, or grant manual trust", cobra.MaximumNArgs(1), func(c *cobra.Command, args []string) error {
 		s, e := a.status(c.Context())
 		if e != nil {
 			return e
@@ -376,9 +396,20 @@ func (a *app) command() *cobra.Command {
 				fmt.Fprintf(a.out, "%s  %s\n", safe(p.Name), safe(p.Fingerprint))
 			}
 			if len(peers) == 0 {
-				fmt.Fprintln(a.out, "No trusted devices. Run relay pair DEVICE to compare fingerprints.")
+				if s.TrustMode == "tailnet" {
+					fmt.Fprintln(a.out, "No Relay devices authorized yet. Run the updated Relay on your other Tailscale devices; no pairing is needed.")
+				} else {
+					fmt.Fprintln(a.out, "No trusted devices. Run relay pair DEVICE to compare fingerprints.")
+				}
 			}
 			return nil
+		}
+		if s.TrustMode == "tailnet" {
+			r, e := a.client.Action(c.Context(), model.Action{Action: "trust", Peer: args[0], Fingerprint: fingerprint})
+			if e != nil {
+				return e
+			}
+			return a.result(r)
 		}
 		if fingerprint == "" {
 			if a.json || !isTerminal(a.in) {
@@ -408,7 +439,7 @@ func (a *app) command() *cobra.Command {
 		return a.result(r)
 	})
 	trust.Flags().StringVar(&fingerprint, "fingerprint", "", "full SHA-256 identity fingerprint verified on the remote device")
-	add("untrust DEVICE", "Revoke trust and stop this peer's active transfers", cobra.ExactArgs(1), func(c *cobra.Command, args []string) error {
+	add("untrust DEVICE", "Block device access and stop its active transfers", cobra.ExactArgs(1), func(c *cobra.Command, args []string) error {
 		if e := a.ensureDaemon(c.Context()); e != nil {
 			return e
 		}

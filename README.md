@@ -8,8 +8,9 @@ daemon keeps working while you close the interface, switch terminals, or use the
 CLI from another session.
 
 No Relay account, hosted service, or SSH credentials. Your existing Tailscale
-connection supplies the network; Relay supplies device identity, trust,
-transfer recovery, and the interface.
+connection supplies the network and device authorization. Relay 0.3 discovers
+other Relay devices automatically, with no pairing or fingerprint confirmation
+required by default.
 
 ![Relay terminal interface with devices, transfers, and details](docs/screenshots/relay.svg)
 
@@ -18,19 +19,19 @@ are fictional fixture data. [Capture details](docs/screenshots/README.md).*
 
 ## What works today
 
-- Automatic Tailnet discovery, with separate indicators for Tailscale online and
-  Relay ready. Device names work in both the TUI and CLI.
+- Automatic Tailnet discovery and trust, with separate indicators for Tailscale
+  online and Relay ready. Device names work in both the TUI and CLI.
 - A responsive keyboard and mouse interface, searchable device and transfer
   lists, incoming approvals, history, and an integrated multi-directory picker.
-- Queue sends to sleeping, previously trusted devices; Relay delivers when they
-  reconnect. Recent verified completions stay visible beside active work.
+- Durable send queues and transfer recovery. Recent verified completions stay
+  visible beside active work.
 - Files, directories, empty files, executable bits, modification times, and
   Unicode names. Payloads stream through bounded buffers.
 - SHA-256 verification before each file is published. Interrupted transfers keep
   their partial data, verify the existing prefix, and resume after reconnection
   or daemon restart. Identical retries recover completed receipts.
-- Explicit fingerprint pairing, TLS 1.3 application encryption, collision
-  policies, pause, cancel, and trust revocation.
+- TLS 1.3 application encryption, persistent device blocks, collision policies,
+  pause and cancel. Manual fingerprint trust remains an optional advanced mode.
 - Wayland/X11 clipboard integration when available, plus a private Relay
   Clipboard for SSH and headless machines. Text and URLs never launch programs.
 
@@ -48,23 +49,21 @@ Relay now includes a native Android app for sending files, text and URLs to your
 other devices and receiving verified transfers. It uses the same encrypted
 protocol as the terminal app. Install the APK from the
 [releases page](https://github.com/PLASMA-FR/relay/releases), connect Tailscale,
-and enable availability in Relay. On your computer:
+and enable availability in Relay. Run Relay 0.3 on a computer on the same
+Tailscale network: the desktop discovers the phone and introduces the other
+visible devices automatically. Select a device and send; no QR exchange or
+fingerprint confirmation is required.
 
-```sh
-relay mobile invite --qr
-```
+If no updated desktop can announce devices, enter one known device's Tailscale
+address in **Add device**. This supplies a discovery starting point, without a
+pairing step. Keep Tailscale connected and Relay availability enabled.
 
-Scan the QR code from **Add device** on the phone and confirm the fingerprint.
-Copy the phone's pairing link from **My device**, then verify the reverse direction:
-
-```sh
-relay mobile pair 'relay://pair?...'
-```
-
-Android offers saved-device discovery, a share-sheet target, transfer controls,
-incoming notifications, and a private inbox with explicit save/share actions.
-See the [mobile guide](mobile/README.md) for installation, build instructions and
-Android-specific limitations. Existing protocol-v1 desktop peers remain compatible.
+Android offers a share-sheet target, transfer controls, incoming notifications,
+and a private inbox with explicit save/share actions. See the
+[mobile guide](mobile/README.md) for installation and build instructions, and the
+[security model](SECURITY.md#android-network-identity) for its active-VPN trust
+assumption. Upgrade both endpoints for the automatic flow; protocol-v1 payloads
+remain compatible with older peers using their configured manual trust.
 
 ### Linux terminal app
 
@@ -74,8 +73,9 @@ archive and `checksums.txt`, verify the archive with SHA-256, extract it, and ru
 its `./install.sh`. Installing a prebuilt archive does not require Go.
 
 Requires Linux and an authenticated local Tailscale installation. Building from
-source also requires Git and **Go 1.25 or newer**. Relay uses `tailscale status
---json`; it does not need a Tailscale API key or a second device login.
+source also requires Git and **Go 1.25 or newer**. Relay reads `tailscale status
+--json` and verifies peer identities through the local tailscaled WhoIs API; it
+does not need a Tailscale API key or a second device login.
 
 ```sh
 git clone https://github.com/PLASMA-FR/relay.git
@@ -113,28 +113,12 @@ discoverable devices; the remote machine must also be running Relay. Tailnet
 policy must allow TCP **7331** between the devices. Do not expose this port
 through a public forwarding rule or Tailscale Funnel.
 
-Pair once in each direction. From desktop:
+Devices running Relay 0.3 become available automatically. The default policy
+trusts every Tailscale-visible device that network access rules permit, including
+shared devices; it is not limited to devices owned by the same person. Relay
+checks network identity and its TLS connection before allowing a transfer.
 
-```sh
-relay pair laptop
-# Compare the full fingerprint with `relay status` on laptop.
-relay trust laptop --fingerprint <verified-laptop-fingerprint>
-```
-
-From laptop:
-
-```sh
-relay pair desktop
-# Compare the full fingerprint with `relay status` on desktop.
-relay trust desktop --fingerprint <verified-desktop-fingerprint>
-```
-
-Replace the placeholders with the complete 64-character SHA-256 fingerprints.
-`pair` observes identity; it does **not** grant trust. Trusting a hostname merely
-because it looks familiar is insufficient. The TUI provides the same comparison
-and confirmation in device details.
-
-Now send:
+Send immediately:
 
 ```sh
 relay send laptop ~/Downloads/challenge.zip
@@ -202,7 +186,8 @@ relay pause ID
 relay resume ID
 relay cancel ID
 relay trust
-relay untrust laptop
+relay untrust laptop  # block this device persistently
+relay trust laptop    # unblock it; no fingerprint needed in automatic mode
 ```
 
 Sending waits for completion by default. Progress goes to stderr; the result
@@ -247,6 +232,7 @@ fallback_internal = true
 
 [network]
 tailscale_only = true
+trust_tailnet = true
 port = 7331
 max_concurrent = 3
 discovery_seconds = 15
@@ -259,9 +245,22 @@ editing configuration (`relay service restart`, or `relay stop` followed by
 `relay` for an automatically started daemon). Keep the same Relay port across
 your devices.
 
+`network.trust_tailnet = true` is the default, including configurations that
+omit the setting. `relay untrust DEVICE` blocks that device across discovery
+refreshes and restarts; `relay trust DEVICE` unblocks it. Incoming file approval
+is separate: set `receive.auto_accept_trusted = false` for Accept / Reject on
+each offer without introducing device pairing.
+
+For explicit manual trust, set `network.trust_tailnet = false` and restart Relay.
+On each endpoint, compare `relay pair DEVICE` with `relay status` on the actual
+other device, then run `relay trust DEVICE --fingerprint FULL_SHA256` with the
+complete verified fingerprint. Repeat in the reverse direction. Existing manual
+pins remain stored separately from automatic observations. Blocks remain in
+force when changing modes; verified manual trust can clear a device's block.
+
 | Data | Default location |
 | --- | --- |
-| Identity, trust, queue, history, Relay Clipboard | `~/.local/state/relay/` |
+| Identity, blocks, manual trust, queue, history, Relay Clipboard | `~/.local/state/relay/` |
 | Cache | `~/.cache/relay/` |
 | Local IPC | `$XDG_RUNTIME_DIR/relay.sock` |
 | IPC when no runtime directory exists | `~/.local/state/relay/run/relay.sock` |
@@ -297,7 +296,9 @@ Uninstall the binary/completions with `./uninstall.sh`; use
 `./uninstall.sh --service` to remove the service too. `relay service uninstall`
 removes only the service. Uninstallation preserves received files, configuration,
 identity, trust, and history. Delete those locations manually only when you
-intend to discard them; removing identity requires pairing again.
+intend to discard them. Removing identity changes the Relay key: automatic mode
+learns it again through authenticated discovery, while manual peers require a
+new verified pin. Queued transfers retain their original destination key.
 
 ## Troubleshooting
 
@@ -308,7 +309,9 @@ the inbox, private state, clipboard, terminal, and the user service.
 | --- | --- |
 | Tailscale unavailable | Run `tailscale status`; install/authenticate it or start `tailscaled`. |
 | Device online, Relay unavailable | Start Relay on that device; check Tailnet policy and the shared TCP port. |
-| Peer identity changed | Compare the new full fingerprint independently; Relay does not trust it automatically. |
+| Peer identity changed | Automatic mode verifies the current Tailscale device and learns its new Relay key. Start a new send for the new key; existing queued jobs keep the old key. Manual mode requires a new verified fingerprint. |
+| Device blocked | Use `relay trust DEVICE` to unblock it in automatic mode. |
+| Phone has no devices | Enable Tailscale and Relay availability; run Relay 0.3 on a visible desktop, or enter one known Tailscale address. |
 | Transfer interrupted | Restore connectivity and leave the source unchanged; inspect `relay transfers`. |
 | Resume prefix differs | Preserve the source/partial for inspection and start a new transfer; Relay refuses the mismatch. |
 | Inbox or collision error | Check free disk space, permissions, and `receive.conflict`; retries preserve partial data. |
@@ -337,9 +340,12 @@ coalesced event snapshots and tcell renders terminal cell differences. File
 payloads use versioned binary frames, bounded streaming, and SHA-256 verification.
 
 There is no Relay cloud. Tailscale may carry connections through its encrypted
-DERP transport when a direct route is unavailable. Tailnet access does not grant
-Relay trust. V1 trust permits the supported file/text/URL operations; it never
-permits remote commands. Read the [security model](SECURITY.md) and
+DERP transport when a direct route is unavailable. By default, verified current
+Tailnet membership grants Relay access, subject to persistent blocks and receive
+approval settings. Automatic application pins are renewed from network identity,
+not saved as permanent manual grants. Bounded device hints support discovery;
+Relay provides no remote filesystem listing or command execution. Read the
+[security model](SECURITY.md) and
 [protocol specification](docs/PROTOCOL.md) for exact boundaries.
 
 ## Development

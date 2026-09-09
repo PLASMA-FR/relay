@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,6 +21,7 @@ import (
 	"github.com/PLASMA-FR/relay/internal/ipc"
 	"github.com/PLASMA-FR/relay/internal/model"
 	"github.com/PLASMA-FR/relay/internal/service"
+	"github.com/PLASMA-FR/relay/internal/tailscale"
 )
 
 type Check struct {
@@ -51,6 +53,20 @@ func Run(ctx context.Context, c config.Config) Report {
 		add("daemon / local IPC", "error", "daemon is not reachable", "Run relay to start it, or relay service install for background operation.")
 	} else {
 		add("daemon / local IPC", "ok", fmt.Sprintf("%s · protocol %d", snap.Version, model.ProtocolVersion), "")
+		if snap.TrustMode == "tailnet" {
+			add("access policy", "ok", "automatic Tailscale trust; no pairing required", "")
+			if snap.Address != "" {
+				address := snap.Address
+				if net.ParseIP(address) != nil {
+					address = net.JoinHostPort(address, fmt.Sprint(c.Network.Port))
+				}
+				if _, e := tailscale.WhoIs(ctx, address); e != nil {
+					add("Tailscale identity API", "error", e.Error(), "Ensure local tailscaled is running and allows your user to read identity information.")
+				} else {
+					add("Tailscale identity API", "ok", "local peer identity verification available", "")
+				}
+			}
+		}
 		if snap.Fingerprint != "" {
 			add("device identity", "ok", snap.Fingerprint, "")
 		}

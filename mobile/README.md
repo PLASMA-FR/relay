@@ -14,11 +14,12 @@ These are actual emulator captures with fictional test devices and transfers.
 The [release startup capture](../docs/screenshots/android/release-app-startup.png)
 shows the real app's empty first-run state. See [validation](../docs/MOBILE-VALIDATION.md).
 
-The first Android app is version **0.2.0**, included with the **Relay 0.2.0**
-release. Existing desktop Relay 0.1.0 transfers remain protocol-compatible.
-The `relay mobile invite` and `relay mobile pair` convenience commands require an
-updated desktop build from this release. See the [desktop guide](../README.md)
-for installation and ordinary desktop commands.
+Android **0.3.0** (version code **2**) is included with **Relay 0.3.0**.
+Devices on your Tailnet connect automatically by default, without Relay pairing.
+Update Relay on both ends for this behavior. Older 0.2.0 peers retain their own
+manual trust policy; the new app cannot override it remotely. The v1 transfer
+protocol remains compatible when the older peer's trust requirements are met.
+See the [desktop guide](../README.md) for installation and desktop commands.
 
 ## What you need
 
@@ -37,43 +38,36 @@ installation from the browser or file manager used to open it.
 
 ## Connect a phone and computer
 
-1. Connect Tailscale on both devices and start desktop Relay. In the Android app,
-   turn **Device availability** on. The status becomes ready when Relay can bind
-   to the Tailscale VPN address.
-2. On the computer, generate its public invitation:
+1. Connect Tailscale on both devices and start Relay 0.3.0 on the computer.
+2. In the Android app, turn **Device availability** on. Relay becomes ready when
+   this app's active VPN provides a Tailscale address.
+3. Wait for discovery. The desktop discovers the phone and exchanges device
+   addresses with it; the phone then discovers reachable Relay devices from those
+   addresses. Open a device to send. No QR code, invitation, or fingerprint
+   confirmation is required in the default **Tailnet** trust mode.
 
-   ```sh
-   relay mobile invite --qr
-   ```
+Devices must be running Relay, reachable through your Tailnet policy, and not
+blocked. Discovery shares device names and numeric Relay endpoints; each
+connection checks the actual TLS identity before automatic authorization.
 
-3. On the phone, choose **Add device**, then scan the terminal QR code or paste
-   the invitation. Scanning requests camera permission; pasting does not need it.
-   Relay probes the computer and checks that its observed TLS fingerprint matches
-   the invitation. Compare the complete fingerprint with the computer, or confirm
-   that you obtained the invitation directly from it, then choose **Trust device**.
-4. Open the phone's device details and use **Copy link** or **Share link** to obtain
-   its own invitation. On the computer, deliberately run:
+**Add device** remains an optional discovery fallback. Enter a numeric Tailscale
+address, optionally with a Relay port. DNS names and ordinary LAN addresses are
+not accepted. If only phones are running and none has a saved device or a desktop
+to introduce peers, add one phone's address on another to start discovery. This
+supplies an address; it does not require pairing in Tailnet mode. Android cannot
+enumerate the Tailnet itself, and Relay does not scan IP ranges.
 
-   ```sh
-   relay mobile pair 'LINK'
-   ```
+Saved devices and addresses learned through authenticated peer directories are
+checked automatically and by **Refresh**. A blocked device stays blocked across
+refreshes and restarts. Use **Unblock** in its details to allow automatic discovery
+again. Blocking also stops that device's active transfers.
 
-   Replace `LINK` with the complete invitation from your phone and keep the quotes.
-   This command probes the phone, verifies the invitation fingerprint, and grants
-   desktop trust only after the match. If the phone is missing from the desktop
-   tailnet peer list, check Tailscale, enable phone availability, and refresh
-   desktop Relay before trying again.
-
-Trust is required on **both** devices. Importing or opening a `relay://pair` link
-on Android never grants trust automatically. Treat a pairing link as public
-identity information whose origin you need to verify; an arbitrary link from
-another app or website is not approval to trust its sender.
-
-You can also add a saved device by its numeric Tailscale address, optionally with
-an explicit Relay port. DNS names and ordinary LAN addresses are not accepted by
-the mobile core. Android's **Refresh** checks your saved devices; it does not
-enumerate the entire tailnet. A changed fingerprint requires a fresh comparison
-and explicit trust decision.
+The advanced manual trust setting retains fingerprint comparison and explicit
+**Trust device** confirmation. In that mode, adding an address or importing an
+invitation produces a candidate for review. A previously blocked device still
+requires confirmation before manual trust clears its block. Optional invitation
+links and QR codes carry only public identity information; importing one checks
+its fingerprint against a live TLS probe and applies the selected trust mode.
 
 ## Send, receive, and keep files
 
@@ -88,7 +82,8 @@ transfers also have a 2 GiB receive limit. Text and links are limited to **1 MiB
 links must use HTTP or HTTPS and are never opened automatically. Allow enough
 free app storage for staged outgoing copies and incoming files.
 
-Incoming offers from trusted devices require **Accept** or **Reject** by default.
+Automatic device trust and receive approval are separate. Incoming offers from
+trusted devices require **Accept** or **Reject** by default.
 Use the Transfers tab, or the incoming-transfer notification while availability
 is enabled. Android 13 and newer ask for notification permission; if you decline,
 open Relay to review offers. **Automatically accept** in device settings applies
@@ -106,9 +101,10 @@ a shared storage folder. Filename collisions are handled by renaming incoming
 files instead of overwriting existing ones.
 
 The Transfers tab exposes pause, resume/retry, and cancel where applicable.
-Incomplete jobs, their original manifests, and saved trust survive process
-restarts. Reconnect Tailscale and turn availability back on to continue; manually
-paused transfers need **Resume**. Failed jobs keep their sources for inspection
+Incomplete jobs, their original manifests, saved device information, manual trust
+pins, and blocks survive process restarts. Automatic trust is re-established by
+live discovery after the VPN reconnects. Reconnect Tailscale and turn availability
+back on to continue; manually paused transfers need **Resume**. Failed jobs keep their sources for inspection
 or retry. Cancelled or rejected jobs cannot be resumed as the same job.
 
 After a successful completion, cancellation, or rejection, the core removes
@@ -121,7 +117,8 @@ and need explicit local cleanup when abandoned. There is no per-transfer storage
 purge screen yet. They are in private app storage, so ordinary file managers cannot
 clean them directly. Developer inspection or app-data cleanup must happen with
 related transfers stopped. Clearing app data or uninstalling is a complete reset,
-not a selective cleanup: export wanted Inbox files first, and expect to pair again.
+not a selective cleanup: export wanted Inbox files first. A reset creates a new
+identity that must be discovered again; manual mode requires new verification.
 
 ## Availability and identity
 
@@ -137,9 +134,27 @@ assume a phone is permanently reachable just because you enabled it earlier.
 
 Each installation has a private identity stored outside Android backup. The app
 also disables backup of its data. Normal app restarts and updates preserve this
-identity. Uninstalling, clearing app data, or losing the installation's private
-storage removes it and requires fingerprint verification and pairing again.
+identity and private Inbox. Updating from 0.2.0 enables Tailnet trust by default
+when the saved state has no trust-mode preference, while retaining the identity,
+Inbox, queue, and existing manual pins. An explicitly selected manual mode stays
+manual on subsequent restarts.
+
+Uninstalling, clearing app data, or losing the installation's private storage
+creates a new identity. Tailnet mode can discover its new key automatically;
+manual mode requires a fresh fingerprint comparison. Existing queued transfers
+remain bound to their original device key and are never silently redirected to
+the replacement identity. Create a new transfer for the replacement device.
+
 Debug and release installs have separate identities, trust, queues, and inboxes.
+
+Automatic trust assumes your active VPN is Tailscale. Relay checks this app's
+active network for VPN transport and a Tailscale-range link address; an unrelated
+VPN or a Tailscale VPN that excludes Relay does not qualify merely because it is
+installed. Public Android APIs cannot prove which provider owns the active VPN,
+so this check is not Tailscale identity attestation. Connect Tailscale as Relay's
+active VPN. Incoming automatic authorization also requires the actual numeric
+source address and a reverse Relay TLS probe with the exact same key. VPN loss
+or replacement clears automatic authorization and cancels discovery.
 
 For the shared wire protocol and trust boundaries, read the
 [security model](../SECURITY.md) and [protocol specification](../docs/PROTOCOL.md).
@@ -216,7 +231,7 @@ Then run:
 
 The release helper requires a configured keystore. Never commit signing files or
 passwords. Keep the release signing key safe: Android updates need the same signing
-identity. The first Android release uses app version `0.2.0` and Android version code `1`.
+identity. This release uses app version `0.3.0` and Android version code `2`.
 
 ## Verification
 
@@ -229,8 +244,13 @@ go test -race ./mobile/relaycore ./internal/invite
 The core tests run against the real v1 transfer engine using package-private
 loopback injection. They cover file/text interoperability, fingerprint pinning,
 manual approvals, revocation, restart recovery, actual partial-file resume,
-source confinement, lifecycle races, and shared-source staging cleanup. Production
-mobile APIs expose no loopback or insecure-network switch.
+source confinement, lifecycle races, and shared-source staging cleanup. Automatic
+mode coverage includes desktop-to-fresh-phone directory bootstrap, a third
+discovered peer, bounded hints, source/key verification, VPN-loss cancellation,
+durable blocks, migration, manual-mode separation, and old queued-key binding.
+Cross-mode tests check that manual unblock and its pin commit together, including
+storage-failure rollback. Production mobile APIs expose no loopback or
+insecure-network switch.
 
 After building the AAR, run Android checks from `mobile/android`:
 

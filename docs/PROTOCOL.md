@@ -15,20 +15,42 @@ key at startup; changing certificates does not change identity.
 
 Connections require TLS 1.3 and a presented Ed25519 certificate on both sides.
 The identity fingerprint is the full, lowercase hexadecimal SHA-256 digest of
-the certificate's DER SubjectPublicKeyInfo. Normal CA/DNS certificate validation
-is intentionally replaced by explicit application pinning. TLS proves possession
-of the corresponding private key; Relay pins the expected server fingerprint
-**before** transmitting an offer, and the receiver checks the client fingerprint
-against its current trust registry. Trust is directional and must be established
-on both installations. A proposed trust addition is excluded from authorization
-until its state is durably committed. Discovery alone grants no transfer permissions.
+the certificate's DER SubjectPublicKeyInfo. CA/DNS certificate validation is
+replaced by application pinning. TLS proves possession of the corresponding
+private key. The sender verifies its expected server fingerprint **before**
+transmitting an offer.
 
-The only operation available before application trust is a bounded Hello
-request/response. Peer version and capabilities are advisory, authenticated to
-its observed fingerprint, and cannot authorize a transfer. Fingerprint verification
-must use an independently checked full fingerprint; a hostname is not an identity.
-TLS protects metadata and content, and supplies replay protection on the wire.
-Transfer IDs provide application retry idempotency, not authentication.
+Relay 0.3 defaults to automatic Tailnet trust. Desktop obtains current membership
+from locally authenticated Tailscale status and verifies the actual remote TCP
+endpoint through tailscaled WhoIs before authorizing a non-Hello request. The
+stable node ID and exact assigned address must match current membership; expired,
+explicitly unauthorized, blocked, or absent nodes are rejected. Outgoing probes
+must also match the discovered Tailscale node. This policy permits every visible
+unblocked device allowed by network access rules, including shared devices; it
+does not compare human owners.
+
+Android relies on the active VPN used by the app, a Tailnet address, and a
+reverse probe of the incoming source's Relay listener proving the same TLS key.
+Its public VPN API cannot prove the provider is Tailscale: the user must select
+Tailscale. A lost VPN or changed availability generation invalidates the operation.
+See [the Android identity boundary](../SECURITY.md#android-network-identity).
+
+New automatic peer metadata is persisted before its key can authorize requests.
+Automatic pins remain separate from durable manual grants and depend on current
+network authorization. Blocks persist across refresh, restart and trust-mode
+changes. A rotated key can be learned automatically for new sends, while an
+existing queued job retains its original expected fingerprint.
+
+The advanced manual mode (`network.trust_tailnet = false` on desktop) requires a
+full independently verified fingerprint on each endpoint. Proposed manual trust
+and unblock changes remain excluded from authorization until durably committed.
+A Hello response alone grants no transfer permission in either mode.
+
+Hello is the only operation available before authorization. It returns bounded
+version, platform and capability metadata bound to the observed TLS fingerprint.
+Every other request passes the authorization hook and effective-key check.
+TLS protects metadata and content and supplies wire replay protection; transfer
+IDs provide retry idempotency rather than authentication.
 
 ## Framing
 
@@ -54,18 +76,51 @@ number of bytes:
 | Complete | 8 | JSON verified receipt and destination paths |
 | Error | 9 | Bounded UTF-8 diagnostic |
 | Heartbeat | 10 | Empty payload during lengthy prefix hashing |
+| Peers | 11 | Optional bounded JSON device directory |
 
 Metadata frames are limited to 2 MiB **before allocation**. Unknown versions,
 message types and oversized declarations are rejected. Data is never JSON or
 Base64 encoded. The engine accepts only the message type expected by its state.
 A heartbeat cannot carry content or replace an acknowledgement.
 
+## Optional device directory
+
+A Hello capability of `peer-directory-v1` advertises the Peers operation. A caller
+first probes that capability, establishes a new mutual-TLS connection, verifies
+the expected server fingerprint, and sends a Peers frame. The receiver runs its
+normal authorization and effective-key gates before invoking its directory
+handler; it checks authorization again before returning the response. Both
+request and response use this shape:
+
+```json
+{"peers":[{"name":"laptop","address":"100.64.0.2:7331","os":"linux"}]}
+```
+
+A directory contains at most 256 hints. Names are limited to 128 bytes, OS labels
+to 64 bytes, and addresses to 80 bytes. Labels must be printable UTF-8; endpoints
+must contain a numeric IP without a zone and a valid port. Duplicate endpoints
+are rejected. Frame-size limits apply before JSON decoding, and consumers apply
+their own Tailnet authorization rules after structural validation.
+
+Hints are discovery candidates, never grants or pin replacements. A desktop
+sends its current unblocked Tailnet members and its own endpoint, and accepts no
+new membership from incoming hints. Mobile queues bounded candidates, probes
+them using the app's active VPN, and performs ordinary key authorization before
+using them. This exchange introduces the desktop to a fresh phone without an
+invite or pairing prompt. If no updated desktop can announce devices, a phone
+needs one known Tailnet address as a discovery starting point.
+
+Peers frames contain no file listings, file payloads, or commands. The operation
+is optional and leaves protocol version 1 and its transfer sequence unchanged.
+Older peers retain payload compatibility and their existing manual trust policy;
+upgrade both endpoints for the complete automatic flow.
+
 ## Transfer sequence
 
 1. Establish mutual TLS; sender verifies its pinned peer fingerprint.
 2. Sender transmits an Offer with a random 128-bit transfer ID.
-3. Receiver checks current trust, validates the complete manifest and requests
-   its local acceptance policy. An explicit rejection ends the connection.
+3. Receiver verifies current network/manual authorization and the TLS key,
+   validates the complete manifest and applies its local acceptance policy. An explicit rejection ends the connection.
 4. Receiver sends Decision. A previously completed, identical transfer may
    immediately return its persisted Complete receipt.
 5. For each regular file in manifest order, receiver sends Resume with its

@@ -566,12 +566,19 @@ func (u *ui) renderDetails() {
 		u.detail.SetText(transferText(t, u.ascii))
 		return
 	}
-	u.detail.SetText("\n  Your Tailnet. Your files.\n\n  Start relay daemon on your other devices. Relay discovers them automatically.\n\n  Select a device and press D to compare identity fingerprints, then trust it on both devices.\n\n  S  send files\n  C  send clipboard\n  ?  all controls")
+	instruction := "Select a device and press D to compare identity fingerprints, then trust it on both devices."
+	if u.snapshot.TrustMode == "tailnet" {
+		instruction = "Devices connect through Tailscale automatically. Pairing is not required. Select a device to send; D opens access controls."
+	}
+	u.detail.SetText("\n  Your Tailnet. Your files.\n\n  Start relay daemon on your other devices. Relay discovers them automatically.\n\n  " + instruction + "\n\n  S  send files\n  C  send clipboard\n  ?  all controls")
 }
 func peerText(p model.Peer) string {
 	trust := "Not trusted"
 	if p.Trusted {
 		trust = "Trusted"
+	}
+	if p.Blocked {
+		trust = "Blocked"
 	}
 	lastSeen := "not observed"
 	if !p.LastSeen.IsZero() {

@@ -320,7 +320,14 @@ func (u *ui) send(req model.SendRequest) {
 	}
 	if !allowed {
 		u.closeModal()
-		u.message("Check the sending device", "\n The daemon connection or this device's trust changed while composing.\n\n Close this dialog, select the device, and try again.\n\n Compare its full fingerprint before granting trust to a changed identity.")
+		message := "\n The daemon connection or this device's trust changed while composing.\n\n Close this dialog, select the device, and try again."
+		if u.snapshot.TrustMode == "tailnet" {
+			message = "\n The daemon connection or this device's access changed while composing.\n\n Close this dialog, select the device, and try again."
+		}
+		if u.snapshot.TrustMode != "tailnet" {
+			message += "\n\n Compare its full fingerprint before granting trust to a changed identity."
+		}
+		u.message("Check the sending device", message)
 		return
 	}
 	u.closeModal()
@@ -381,13 +388,33 @@ func (u *ui) deviceDetails() {
 		u.message("This device", "\n "+safe(u.snapshot.Name)+"\n\n Identity fingerprint\n "+safe(u.snapshot.Fingerprint)+"\n\n Run Relay on another Tailnet device to begin.")
 		return
 	}
-	text := u.text().SetText(peerText(p) + "\n\n Compare the full fingerprint with relay status on that device. Trust must be granted on BOTH devices.").SetWrap(true).SetScrollable(true)
+	tailnet := u.snapshot.TrustMode == "tailnet"
+	explanation := "\n\n Compare the full fingerprint with relay status on that device. Trust must be granted on BOTH devices."
+	if tailnet {
+		explanation = "\n\n Access follows your Tailscale network. Pairing is not required. Block a device here to stop its access."
+	}
+	text := u.text().SetText(peerText(p) + explanation).SetWrap(true).SetScrollable(true)
 	text.SetBorder(true).SetTitle(" Device identity ")
 	label := "Compare & trust"
 	if p.Trusted {
 		label = "Revoke trust"
 	}
+	if tailnet {
+		label = "Block device"
+		if p.Blocked {
+			label = "Unblock device"
+		}
+	}
 	button := u.button(label, func() {
+		if tailnet {
+			u.closeModal()
+			action := "untrust"
+			if p.Blocked {
+				action = "trust"
+			}
+			u.action(model.Action{Action: action, Peer: p.ID})
+			return
+		}
 		if p.Trusted {
 			u.closeModal()
 			u.action(model.Action{Action: "untrust", Peer: p.ID})

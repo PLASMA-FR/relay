@@ -6,30 +6,74 @@ and the limits users should consider when trusting another device.
 
 ## Network and identity
 
-Production listeners bind to a local Tailscale address discovered through the
-authenticated Tailscale CLI. Relay does not expose a public listener, run a
-central transfer server, or require a Tailscale API token. The
-`tailscale_only = false` setting accepts explicit numeric loopback listeners for
-local testing; it does not enable general LAN/public listening.
+Relay 0.3 defaults to `network.trust_tailnet = true`: every Tailscale-visible
+device permitted to reach Relay by the network's access rules can connect
+without pairing. This includes shared devices and devices owned by other people;
+the policy does not require a matching human owner. Relay must be running on
+the remote device, and local blocks still apply.
 
-Tailscale transport encryption is supplemented by Relay's TLS 1.3 connections.
-Both endpoints present Ed25519 certificates and prove possession of their keys.
-CA/DNS verification is replaced by pinning the complete SHA-256 fingerprint of
-the certificate's public-key information. Self-signed certificates can change
-without changing the installation's persistent identity.
+Production desktop listeners bind to a local Tailscale address discovered through
+the authenticated Tailscale CLI. Incoming authorization checks the actual TCP
+remote endpoint with the local tailscaled WhoIs API, verifies its exact assigned
+address and stable node identity against the current device map, and rejects
+expired or explicitly unauthorized identities. A Tailscale-shaped IP or a
+claimed name is insufficient. Outgoing discovery probes also verify the expected
+Tailscale node before publishing its observed Relay key. Lost or stale membership,
+removed devices, and discovery failure disable automatic authorization.
 
-The sender checks the expected fingerprint before transmitting an offer. The
-receiver independently checks the sender against its current trust registry.
-Pairing is directional: both installations must explicitly trust each other.
-Before trusting, compare the full fingerprint with `relay status` on the actual
-remote device through an independently trusted session. Names and addresses
-are discovery hints, not proof of identity. Changed identities are not silently
-accepted.
+Relay adds TLS 1.3 to the Tailscale transport. Both endpoints present Ed25519
+certificates and prove possession of their keys. CA/DNS verification is replaced
+by pinning the complete SHA-256 fingerprint of the certificate's public-key
+information. The sender verifies its expected application fingerprint before
+transmitting an offer. New automatic keys become effective only after their
+peer metadata is saved; automatic pins remain separate from durable manual
+trust and must be re-established after restart.
 
-Untrusted peers can request bounded discovery metadata, including display name,
-platform, version, and capabilities. They cannot use that operation to send
-files or clipboard content. Tailscale routing may use DERP when direct paths
-are unavailable; this does not introduce a Relay-operated cloud service.
+A current authorized device can rotate its Relay key without a pairing prompt.
+Existing queued jobs retain their original expected key and are never silently
+redirected to the replacement. New sends use the newly verified key.
+
+`tailscale_only = false` permits explicit numeric loopback listeners for local
+testing; it does not enable LAN/public listening or automatic loopback trust.
+Relay uses the local Tailscale daemon rather than a control-plane API token and
+has no central transfer server. Tailscale may use encrypted DERP transport when
+a direct route is unavailable.
+
+### Android network identity
+
+Android's public VPN APIs do not cryptographically identify the VPN provider.
+Relay assumes the VPN selected by the user is Tailscale. It checks that the
+active network used by Relay is a VPN with a matching Tailnet address, rather
+than accepting an unrelated VPN found elsewhere on the device. Losing that
+network or stopping availability disables automatic authorization and discovery.
+
+For incoming automatic authorization, the mobile core reverse-probes the Relay
+listener at the actual source IP and requires the observed key to equal the
+incoming TLS key. It saves the peer before authorizing it and rechecks its VPN
+availability generation. Outgoing candidates must be numeric Tailnet endpoints
+and successfully prove their TLS keys over that active VPN. This is an Android
+network assumption plus a Relay key proof, not desktop WhoIs verification.
+
+### Manual trust and device discovery
+
+Set `network.trust_tailnet = false` on desktop, or choose manual trust in Android's
+advanced settings, to require explicit application pins. Compare the full
+fingerprint on the actual remote device through an independently trusted session
+before granting manual trust. Each endpoint authorizes its peer separately.
+Automatic observations never become durable manual grants.
+
+Before authorization, peers may request only bounded Hello metadata: display
+name, platform, version, capabilities and the observed TLS identity. The optional
+`peer-directory-v1` exchange requires authorization and carries at most 256
+numeric device endpoint hints. Desktop responses are confined to current
+unblocked Tailnet members and its own endpoint; incoming hints cannot add desktop
+membership. Mobile treats hints as candidates to verify, never trust assertions.
+This introduces a fresh phone when a desktop discovers it. If no updated desktop
+can announce devices, a phone needs one known address to begin discovery.
+
+The directory exposes neither filesystem listings nor remote commands. It is
+an optional extension: protocol-v1 file and text framing remains compatible,
+but older endpoints need upgrading for the complete automatic trust flow.
 
 ## What trust allows
 
@@ -41,9 +85,15 @@ approval. Manual approval is preserved as an explicit decision through recovery;
 an interrupted, unaccepted offer must not become accepted merely because the
 daemon restarted.
 
-Revoking trust stops the device's active transfers and prevents subsequent
-authorized streaming. Received URLs are text: Relay does not open browsers,
-execute commands, launch received files, or expose a shell. Executable permission
+In automatic mode, `relay untrust DEVICE` blocks the device and stops its active
+transfers. Blocks survive discovery refresh, restart, and a switch to manual
+mode. `relay trust DEVICE` unblocks in automatic mode; manual mode requires the
+verified fingerprint. A new trust grant or unblock is withheld until its state
+is durably saved. A failed block save still revokes access in memory and reports
+the durability failure so it can be retried.
+
+Received URLs are text: Relay does not open browsers, execute commands, launch
+received files, or expose a shell. Executable permission
 bits may be preserved on transferred files. Incoming text updates only the
 private Relay Clipboard, not the desktop clipboard or terminal clipboard.
 
@@ -107,18 +157,21 @@ preserve content; the receiving program is responsible for its own handling.
 
 ## Stored data and cleanup
 
-State includes the private identity, trust registry, queued work, transfer
+State includes the private identity, device blocks, manual trust registry,
+observed peer metadata, queued work, transfer
 history, the Relay Clipboard, and recovery journals. Pending outbound text and
-stdin spools are kept so work can survive restart. Successful transfers clear pending outbound content; failed work that can be
-retried may retain its source request. Protocol journals retain metadata and
+stdin spools are kept so work can survive restart. Successful transfers clear
+pending outbound content; failed work that can be retried may retain its source
+request. Protocol journals retain metadata and
 integrity information rather than redundant clipboard text or completed payload
 copies.
 
 Interrupted and abandoned incoming partials intentionally remain on disk, and
 protocol journals currently require explicit local retention cleanup. Stop the
 related work before removing them. Installer and service uninstallation preserve
-user data. Deleting the identity key changes device identity and requires pairing
-again on peers; do not delete it merely to troubleshoot a transfer.
+user data. Deleting the identity key changes device identity. Automatic mode
+relearns a current authorized device; manual peers require a new verified pin.
+Existing queued jobs keep their original key.
 
 Do not publish state directories, received files, logs, clipboard contents,
 private keys, or Tailscale credentials in issue reports. The repository contains
