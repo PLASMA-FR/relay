@@ -12,6 +12,9 @@ connection supplies the network and device authorization. Relay 0.3 discovers
 other Relay devices automatically, with no pairing or fingerprint confirmation
 required by default.
 
+See [automatic Tailnet access](docs/TAILNET-ACCESS.md) for discovery, blocking,
+upgrade behavior, and the separate receive-approval setting.
+
 ![Relay terminal interface with devices, transfers, and details](docs/screenshots/relay.svg)
 
 *Actual widgets captured with tcell SimulationScreen; device names and transfers

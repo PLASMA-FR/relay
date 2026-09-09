@@ -8,13 +8,13 @@ import android.provider.MediaStore
 import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
 
-/** Test artifacts go into shared media so Gradle's app uninstall cannot remove them. */
-internal fun saveTestScreenshot(name: String) {
+/** Saves and consumes a rendered Compose bitmap; shared media survives test app uninstall. */
+internal fun saveTestScreenshot(name: String, bitmap: Bitmap) {
     require(name.matches(Regex("[a-z0-9-]+\\.png")))
     val instrumentation = InstrumentationRegistry.getInstrumentation()
     val context = instrumentation.targetContext
-    val bitmap = requireNotNull(instrumentation.uiAutomation.takeScreenshot())
     try {
+        checkScreenshotHasContent(bitmap)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val resolver = context.contentResolver
             val metadata = ContentValues().apply {
@@ -44,5 +44,34 @@ internal fun saveTestScreenshot(name: String) {
         }
     } finally {
         bitmap.recycle()
+    }
+}
+
+/** Reject a blank render instead of publishing a successful-looking screenshot artifact. */
+private fun checkScreenshotHasContent(bitmap: Bitmap) {
+    check(bitmap.width > 0 && bitmap.height > 0) { "Screenshot has no dimensions" }
+    // Sampling the Compose content (without system bars) catches uniform white/black frames.
+    // Check RGB range rather than absolute brightness so this works in both themes.
+    var minRed = 255
+    var minGreen = 255
+    var minBlue = 255
+    var maxRed = 0
+    var maxGreen = 0
+    var maxBlue = 0
+    for (row in 0 until 64) {
+        val y = ((row + 0.5) * bitmap.height / 64).toInt().coerceAtMost(bitmap.height - 1)
+        for (column in 0 until 64) {
+            val x = ((column + 0.5) * bitmap.width / 64).toInt().coerceAtMost(bitmap.width - 1)
+            val pixel = bitmap.getPixel(x, y)
+            val red = (pixel shr 16) and 255
+            val green = (pixel shr 8) and 255
+            val blue = pixel and 255
+            minRed = minOf(minRed, red); maxRed = maxOf(maxRed, red)
+            minGreen = minOf(minGreen, green); maxGreen = maxOf(maxGreen, green)
+            minBlue = minOf(minBlue, blue); maxBlue = maxOf(maxBlue, blue)
+        }
+    }
+    check(maxOf(maxRed - minRed, maxGreen - minGreen, maxBlue - minBlue) >= 32) {
+        "Screenshot is blank or lacks visible content"
     }
 }

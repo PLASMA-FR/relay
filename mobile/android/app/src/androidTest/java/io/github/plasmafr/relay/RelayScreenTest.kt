@@ -1,5 +1,6 @@
 package io.github.plasmafr.relay
 
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import io.github.plasmafr.relay.data.Peer
@@ -218,6 +219,8 @@ class RelayScreenTest {
 
     @Test fun screenshotLightDevicesExplicitFixture() {
         compose.setContent { RelayTheme(darkTheme = false) { RelayScreen(fixture.copy(peers = listOf(laptop, laptop.copy(id = "fixture-server", name = "Home server", os = "linux", online = false, address = "100.64.0.24:7331"))), RelayUiActions()) } }
+        compose.onNodeWithText("Your devices.").assertIsDisplayed()
+        compose.onNodeWithTag("peer_${laptop.id}").assertIsDisplayed()
         saveScreenshot("fixture-devices-light.png")
     }
 
@@ -226,11 +229,14 @@ class RelayScreenTest {
         val offer = Transfer(id = "fixture-incoming", name = "Project notes.pdf", peer = laptop.name, direction = "receive", kind = "file", status = "offered", total = 120_000)
         compose.setContent { RelayTheme(darkTheme = true) { RelayScreen(fixture.copy(transfers = listOf(transfer, offer)), RelayUiActions()) } }
         compose.onNodeWithTag("nav_Transfers").performClick()
+        compose.onNodeWithText("In motion.").assertIsDisplayed()
+        compose.onNodeWithText("Summer memories.zip").assertIsDisplayed()
         saveScreenshot("fixture-transfers-dark.png")
     }
 
     private fun saveScreenshot(name: String) {
         compose.waitForIdle()
-        saveTestScreenshot(name)
+        val root = compose.onRoot().assertIsDisplayed()
+        saveTestScreenshot(name, root.captureToImage().asAndroidBitmap())
     }
 }

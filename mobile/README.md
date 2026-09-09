@@ -12,7 +12,9 @@ inbox. There is no separate Relay account or Relay cloud service.
 
 These are actual emulator captures with fictional test devices and transfers.
 The [release startup capture](../docs/screenshots/android/release-app-startup.png)
-shows the real app's empty first-run state. See [validation](../docs/MOBILE-VALIDATION.md).
+shows the app's first-run state. These captures are from the 0.2 interface;
+the current [automatic-access behavior and validation](../docs/TAILNET-ACCESS.md)
+describe the no-pairing flow in 0.3.
 
 Android **0.3.0** (version code **2**) is included with **Relay 0.3.0**.
 Devices on your Tailnet connect automatically by default, without Relay pairing.

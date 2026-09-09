@@ -1,5 +1,8 @@
 package io.github.plasmafr.relay
 
+import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.test.captureToImage
+import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -26,6 +29,6 @@ class MainActivityBootTest {
         compose.onNodeWithText("Your devices.").assertIsDisplayed()
         compose.onNodeWithTag("availability").assertIsDisplayed()
         compose.waitForIdle()
-        saveTestScreenshot("native-app-startup.png")
+        saveTestScreenshot("native-app-startup.png", compose.onRoot().assertIsDisplayed().captureToImage().asAndroidBitmap())
     }
 }
