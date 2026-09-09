@@ -62,8 +62,8 @@ class RelayService : Service() {
                 network = watcher
                 watcher.start()
                 scope.launch {
-                    watcher.address.collect { address ->
-                        repository.connect(session, address).onFailure {
+                    watcher.session.collect { networkSession ->
+                        repository.connect(session, networkSession.address).onFailure {
                             repository.reportError("Device availability failed: ${it.message.orEmpty()}")
                         }
                     }
@@ -72,7 +72,7 @@ class RelayService : Service() {
                     repository.state.collect { state ->
                         val message = when {
                             state.error.isNotEmpty() -> "Attention needed — open Relay"
-                            state.running -> "Available to your trusted devices"
+                            state.running -> if (state.trustMode == "tailnet") "Available to your Tailnet devices" else "Available to your trusted devices"
                             else -> "Paused — connect to Tailscale"
                         }
                         if (message != availabilityMessage && canNotify()) {

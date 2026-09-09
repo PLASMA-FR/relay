@@ -85,7 +85,7 @@ class RelayRepository(private val context: Context) {
     }
 
     suspend fun trust(peer: Peer): Result<Unit> = operation {
-        require(peer.id.isNotBlank() && peer.fingerprint.matches(Regex("[a-f0-9]{64}"))) { "Compare the complete device fingerprint first" }
+        require(peer.id.isNotBlank() && peer.fingerprint.matches(Regex("[a-f0-9]{64}"))) { "Device identity is unavailable. Refresh and try again." }
         client.await().trust(peer.id, peer.fingerprint)
     }
     suspend fun untrust(peerId: String): Result<Unit> = operation { client.await().untrust(peerId) }
@@ -123,6 +123,7 @@ class RelayRepository(private val context: Context) {
         SnapshotParser.result(client.await().action(action, id))
         Unit
     }
+    suspend fun setTrustTailnet(enabled: Boolean): Result<Unit> = operation { client.await().setTrustTailnet(enabled) }
     suspend fun setAutoAccept(enabled: Boolean): Result<Unit> = operation { client.await().setAutoAccept(enabled) }
     suspend fun invite(): Result<String> = operation { client.await().invite() }
     suspend fun exportFile(sourcePath: String, destination: Uri): Result<Unit> = operation { privateFiles.export(sourcePath, destination) }
@@ -148,7 +149,12 @@ class RelayRepository(private val context: Context) {
     }
     internal suspend fun connect(epoch: Long, address: String): Result<Unit> = operation {
         networkMutex.withLock {
-            if (availabilityEpoch.get() == epoch && state.value.availableRequested) client.await().start(address)
+            if (availabilityEpoch.get() == epoch && state.value.availableRequested) {
+                val native = client.await()
+                // Each network session has fresh authorization, even if its address is unchanged.
+                native.stop()
+                if (address.isNotBlank()) native.start(address)
+            }
         }
     }
     internal fun endAvailability(epoch: Long) {

@@ -35,12 +35,15 @@ class CoreSmokeTest {
                 fingerprint = snapshot.getString("fingerprint")
                 assertTrue("Native core must create a full SHA256 identity", fingerprint.matches(Regex("[a-f0-9]{64}")))
                 assertFalse(snapshot.getBoolean("running"))
-                assertFalse("Manual approval is the default", snapshot.getBoolean("auto_accept"))
+                assertEquals("tailnet", snapshot.getString("trust_mode"))
+                assertFalse("File approval is the default", snapshot.getBoolean("auto_accept"))
                 assertEquals(0, snapshot.getJSONArray("peers").length())
                 assertEquals(inbox, snapshot.getString("receive_directory"))
                 first.start("")
                 first.stop()
                 assertFalse(JSONObject(first.snapshot()).getBoolean("running"))
+                first.setTrustTailnet(false)
+                assertEquals("manual", JSONObject(first.snapshot()).getString("trust_mode"))
                 first.setAutoAccept(true)
                 assertTrue("Native observer should deliver a state update", updates.await(5, TimeUnit.SECONDS))
             } finally { first.close() }
@@ -48,6 +51,9 @@ class CoreSmokeTest {
             try {
                 val restored = JSONObject(reopened.snapshot())
                 assertEquals(fingerprint, restored.getString("fingerprint"))
+                assertEquals("Manual trust preference is durable", "manual", restored.getString("trust_mode"))
+                reopened.setTrustTailnet(true)
+                assertEquals("tailnet", JSONObject(reopened.snapshot()).getString("trust_mode"))
                 assertTrue("Auto-accept preference is durable", restored.getBoolean("auto_accept"))
                 assertFalse("Reopen never starts receiving automatically", restored.getBoolean("running"))
             } finally { reopened.close() }

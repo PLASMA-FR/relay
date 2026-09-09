@@ -33,7 +33,7 @@ class RelayScreenTest {
         compose.setContent { RelayTheme { RelayScreen(RelayState(loading = false), RelayUiActions(onAvailable = { available = it })) } }
         compose.onNodeWithTag("availability").performClick()
         compose.runOnIdle { assertEquals(true, available) }
-        compose.onNodeWithText("Add your first device").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("Enter an address").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("Connect Tailscale").performScrollTo().assertIsDisplayed()
     }
 
@@ -41,7 +41,7 @@ class RelayScreenTest {
         val untrusted = laptop.copy(trusted = false)
         var trusted = false
         compose.setContent {
-            RelayTheme { RelayScreen(fixture.copy(peers = listOf(untrusted)), RelayUiActions(onTrust = { peer, done -> assertEquals(untrusted.fingerprint, peer.fingerprint); trusted = true; done() })) }
+            RelayTheme { RelayScreen(fixture.copy(trustMode = "manual", peers = listOf(untrusted)), RelayUiActions(onTrust = { peer, done -> assertEquals(untrusted.fingerprint, peer.fingerprint); trusted = true; done() })) }
         }
         compose.onNodeWithTag("peer_${laptop.id}").performScrollTo().performClick()
         compose.onNodeWithTag("verify_peer").performClick()
@@ -51,6 +51,108 @@ class RelayScreenTest {
         compose.onNodeWithTag("confirm_fingerprint").performScrollTo().performClick()
         compose.onNodeWithTag("trust_device").assertIsEnabled().performClick()
         compose.runOnIdle { assertEquals(true, trusted) }
+    }
+
+    @Test fun automaticDiscoveryNeedsNoPairingAndKeepsAddressFallback() {
+        compose.setContent { RelayTheme { RelayScreen(fixture.copy(peers = emptyList()), RelayUiActions()) } }
+        compose.onNodeWithTag("discovery_waiting").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("Devices appear automatically").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("Enter an address").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("Pair and verify").assertDoesNotExist()
+    }
+
+    @Test fun addingTailnetDeviceOpensSendActionsWithoutFingerprintConfirmation() {
+        var input = ""
+        var trustCalls = 0
+        compose.setContent {
+            RelayTheme { RelayScreen(fixture, RelayUiActions(
+                onAddDevice = { value, complete -> input = value; complete(laptop) },
+                onTrust = { _, _ -> trustCalls++ },
+            )) }
+        }
+        compose.onNodeWithTag("add_device").performScrollTo().performClick()
+        compose.onNodeWithTag("device_address").performTextInput(laptop.address)
+        compose.onNodeWithTag("connect_device").performClick()
+        compose.onNodeWithText("Send files").assertIsDisplayed()
+        compose.onNodeWithTag("confirm_fingerprint").assertDoesNotExist()
+        compose.onNodeWithTag("trust_device").assertDoesNotExist()
+        compose.runOnIdle { assertEquals(laptop.address, input); assertEquals(0, trustCalls) }
+    }
+
+    @Test fun importedDeviceLinkAlsoSkipsPairingInDefaultMode() {
+        val link = "relay://pair?v=1&fixture=true"
+        var input = ""
+        compose.setContent {
+            RelayTheme { RelayScreen(fixture, RelayUiActions(onAddDevice = { value, complete -> input = value; complete(laptop) }), initialInvite = link) }
+        }
+        compose.onNodeWithTag("device_address").assertTextContains(link)
+        compose.onNodeWithTag("connect_device").performClick()
+        compose.onNodeWithText("Send files").assertIsDisplayed()
+        compose.onNodeWithTag("fingerprint").assertDoesNotExist()
+        compose.runOnIdle { assertEquals(link, input) }
+    }
+
+    @Test fun tailnetDeviceCanBeBlockedWithoutPairing() {
+        var blockedId = ""
+        compose.setContent { RelayTheme { RelayScreen(fixture, RelayUiActions(onUntrust = { blockedId = it })) } }
+        compose.onNodeWithTag("peer_${laptop.id}").performScrollTo().performClick()
+        compose.onNodeWithTag("block_peer").performScrollTo().performClick()
+        compose.onNodeWithTag("confirm_block").performClick()
+        compose.runOnIdle { assertEquals(laptop.id, blockedId) }
+        compose.onNodeWithTag("confirm_fingerprint").assertDoesNotExist()
+    }
+
+    @Test fun blockedTailnetDeviceCanBeUnblockedWithoutFingerprintConfirmation() {
+        val blocked = laptop.copy(blocked = true, trusted = false)
+        var unblockedId = ""
+        compose.setContent { RelayTheme { RelayScreen(fixture.copy(peers = listOf(blocked)), RelayUiActions(onTrust = { peer, done -> unblockedId = peer.id; done() })) } }
+        compose.onNodeWithText("Blocked").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithTag("peer_${laptop.id}").performClick()
+        compose.onNodeWithText("Send files").assertDoesNotExist()
+        compose.onNodeWithTag("unblock_peer").performClick()
+        compose.runOnIdle { assertEquals(laptop.id, unblockedId) }
+        compose.onNodeWithTag("confirm_fingerprint").assertDoesNotExist()
+    }
+
+    @Test fun blockedDeviceInManualModeRequiresFingerprintConfirmationToUnblock() {
+        val blocked = laptop.copy(blocked = true, trusted = false)
+        var trustedId = ""
+        compose.setContent {
+            RelayTheme { RelayScreen(fixture.copy(trustMode = "manual", peers = listOf(blocked)), RelayUiActions(
+                onTrust = { peer, done ->
+                    assertEquals(blocked.fingerprint, peer.fingerprint)
+                    trustedId = peer.id
+                    done()
+                },
+            )) }
+        }
+        compose.onNodeWithTag("peer_${laptop.id}").performScrollTo().performClick()
+        compose.onNodeWithTag("unblock_peer").assertDoesNotExist()
+        compose.onNodeWithText("Send files").assertDoesNotExist()
+        compose.onNodeWithTag("verify_peer").assertTextContains("Verify and unblock").performClick()
+        compose.onNodeWithTag("trust_device").assertTextContains("Trust and unblock").assertIsNotEnabled()
+        compose.runOnIdle { assertEquals("", trustedId) }
+        compose.onNodeWithTag("confirm_fingerprint").performScrollTo().performClick()
+        compose.onNodeWithTag("trust_device").assertIsEnabled().performClick()
+        compose.runOnIdle { assertEquals(laptop.id, trustedId) }
+    }
+
+    @Test fun waitingTailnetDeviceNeverRequestsManualPairingAndCanBeBlocked() {
+        compose.setContent { RelayTheme { RelayScreen(fixture.copy(peers = listOf(laptop.copy(trusted = false))), RelayUiActions()) } }
+        compose.onNodeWithTag("peer_${laptop.id}").performScrollTo().performClick()
+        compose.onNodeWithTag("verify_peer").assertDoesNotExist()
+        compose.onNodeWithText("Send files").assertDoesNotExist()
+        compose.onNodeWithTag("block_peer").assertIsDisplayed()
+    }
+
+    @Test fun advancedManualTrustIsSeparateFromIncomingApproval() {
+        var trustTailnet: Boolean? = null
+        var autoAccept: Boolean? = null
+        compose.setContent { RelayTheme { RelayScreen(fixture, RelayUiActions(onTrustTailnet = { trustTailnet = it }, onAutoAccept = { autoAccept = it })) } }
+        compose.onNodeWithTag("my_device").performClick()
+        compose.onNodeWithTag("fingerprint").assertDoesNotExist()
+        compose.onNodeWithTag("trust_tailnet").performScrollTo().assertIsOn().performClick()
+        compose.runOnIdle { assertEquals(false, trustTailnet); assertEquals(null, autoAccept) }
     }
 
     @Test fun incomingOfferWaitsForManualApproval() {

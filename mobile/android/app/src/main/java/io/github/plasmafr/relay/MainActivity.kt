@@ -125,7 +125,7 @@ class MainActivity : ComponentActivity() {
         val scanner = rememberLauncherForActivityResult(ScanContract()) { result ->
             result.contents?.let { contents ->
                 if (contents.startsWith("relay://pair")) pairingLink = contents
-                else message = "This QR code is not a Relay pairing link. Open pairing details on your other device."
+                else message = "This QR code is not a Relay device link. Open device details on your other device."
             }
         }
         fun copyText(text: String) {
@@ -151,8 +151,8 @@ class MainActivity : ComponentActivity() {
                 },
                 onRefresh = { perform<Unit>("Devices refreshed.") { repository.refresh() } },
                 onAddDevice = { input, complete -> perform(onSuccess = complete) { repository.addDevice(input) } },
-                onTrust = { peer, complete -> perform<Unit>("Device verified.", { complete() }) { repository.trust(peer) } },
-                onUntrust = { id -> perform<Unit>("Device trust removed.") { repository.untrust(id) } },
+                onTrust = { peer, complete -> perform<Unit>(if (state.trustMode == "tailnet") "Device unblocked." else "Device verified.", { complete() }) { repository.trust(peer) } },
+                onUntrust = { id -> perform<Unit>(if (state.trustMode == "tailnet") "Device blocked." else "Device trust removed.") { repository.untrust(id) } },
                 onPickFiles = { peer -> fileTarget = peer; filePicker.launch(arrayOf("*/*")) },
                 onSendText = { peer, text, kind, complete -> perform<Unit>("Queued for sending.", { complete() }) { repository.sendText(peer, text, kind) } },
                 onSendShared = { peer, complete ->
@@ -176,7 +176,7 @@ class MainActivity : ComponentActivity() {
                 onCopyText = ::copyText,
                 onShareInvite = {
                     perform<String>(onSuccess = { uri ->
-                        startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, uri) }, "Share Relay pairing link"))
+                        startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, uri) }, "Share Relay device link"))
                     }) { repository.invite() }
                 },
                 onCopyInvite = { perform<String>(onSuccess = ::copyText) { repository.invite() } },
@@ -187,6 +187,7 @@ class MainActivity : ComponentActivity() {
                     val receivingResume = action == "resume" && (state.transfers + state.history).any { it.id == id && it.direction == "receive" }
                     perform<Unit>(if (receivingResume) "Ready to receive. Resume this transfer on the sending device." else null) { repository.action(action, id) }
                 },
+                onTrustTailnet = { enabled -> perform<Unit> { repository.setTrustTailnet(enabled) } },
                 onAutoAccept = { enabled -> perform<Unit> { repository.setAutoAccept(enabled) } },
                 onExport = { path -> exportSource = path; exportPicker.launch(path.substringAfterLast('/').ifBlank { "relay-file" }) },
                 onShareFile = { path -> repository.shareFile(path).onFailure { message = it.message ?: "Could not share this file." } },
@@ -217,7 +218,7 @@ private fun isWebUrl(text: String): Boolean = runCatching {
 /** Terminal QR codes can be light-on-dark; alternate polarity across camera frames. */
 internal fun pairingScanOptions(): ScanOptions = ScanOptions()
     .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-    .setPrompt("Scan the pairing QR code on your other device")
+    .setPrompt("Scan the Relay QR code on your other device")
     .setBeepEnabled(false)
     .setOrientationLocked(false)
     .addExtra(Intents.Scan.SCAN_TYPE, Intents.Scan.MIXED_SCAN)

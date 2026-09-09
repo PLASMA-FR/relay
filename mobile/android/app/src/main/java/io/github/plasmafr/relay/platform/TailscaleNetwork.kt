@@ -5,52 +5,85 @@ import android.net.ConnectivityManager
 import android.net.LinkProperties
 import android.net.Network
 import android.net.NetworkCapabilities
-import android.net.NetworkRequest
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.net.InetAddress
 
-/** Android supplies VPN link addresses; native interface enumeration is intentionally unused. */
+/**
+ * Observe the active VPN for this app. An installed VPN or an unrelated VPN network is
+ * insufficient (Relay may be excluded by split tunneling). Android does not expose a
+ * public way to verify the VPN provider: the user must connect Tailscale as their VPN.
+ */
 internal class TailscaleNetwork(context: Context) : AutoCloseable {
+    internal data class Session(val address: String = "", val generation: Long = 0)
+
     private val manager = context.getSystemService(ConnectivityManager::class.java)
-    private val addresses = mutableMapOf<Network, List<String>>()
-    private val mutableAddress = MutableStateFlow("")
-    val address: StateFlow<String> = mutableAddress
+    private val lock = Any()
+    private val mutableSession = MutableStateFlow(Session())
+    val session: StateFlow<Session> = mutableSession
+    private var currentNetwork: Network? = null
     private var registered = false
     private val callback = object : ConnectivityManager.NetworkCallback() {
-        override fun onAvailable(network: Network) = changed(network, manager.getLinkProperties(network))
-        override fun onLinkPropertiesChanged(network: Network, properties: LinkProperties) = changed(network, properties)
-        override fun onLost(network: Network) { synchronized(addresses) { addresses.remove(network); publish() } }
+        override fun onAvailable(network: Network) = refresh(network)
+        override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) =
+            refresh(network, capabilities = capabilities)
+        override fun onLinkPropertiesChanged(network: Network, properties: LinkProperties) =
+            refresh(network, properties = properties)
+        override fun onLost(network: Network) {
+            synchronized(lock) {
+                if (network == currentNetwork) publish(null, "")
+            }
+        }
     }
 
     fun start() {
-        val request = NetworkRequest.Builder().removeCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
-            .addTransportType(NetworkCapabilities.TRANSPORT_VPN).build()
-        manager.registerNetworkCallback(request, callback)
-        registered = true
-        manager.allNetworks.forEach { network ->
-            if (manager.getNetworkCapabilities(network)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true) {
-                changed(network, manager.getLinkProperties(network))
-            }
+        synchronized(lock) {
+            if (registered) return
+            manager.registerDefaultNetworkCallback(callback)
+            registered = true
+            refresh()
         }
     }
-    private fun changed(network: Network, properties: LinkProperties?) {
-        synchronized(addresses) {
-            addresses[network] = properties?.linkAddresses.orEmpty().mapNotNull { link ->
-                link.address.takeIf(::isTailscaleAddress)?.hostAddress?.substringBefore('%')
-            }
-            publish()
+
+    private fun refresh(network: Network? = null, capabilities: NetworkCapabilities? = null, properties: LinkProperties? = null) {
+        synchronized(lock) {
+            if (!registered) return
+            val active = manager.activeNetwork
+            // Callback updates from a replaced default network must not authorize it.
+            val caps = if (active != null && active == network && capabilities != null) capabilities
+                else active?.let(manager::getNetworkCapabilities)
+            val links = if (active != null && active == network && properties != null) properties
+                else active?.let(manager::getLinkProperties)
+            val address = selectAddress(
+                active != null && caps?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true,
+                links?.linkAddresses.orEmpty().map { it.address },
+            )
+            publish(active.takeIf { address.isNotEmpty() }, address)
         }
     }
-    private fun publish() {
-        mutableAddress.value = addresses.values.flatten().sortedWith(compareBy<String> { ':' in it }.thenBy { it }).firstOrNull().orEmpty()
+
+    private fun publish(network: Network?, address: String) {
+        if (currentNetwork != network || mutableSession.value.address != address) {
+            currentNetwork = network
+            // Preserve a network replacement even when StateFlow conflates an intervening loss.
+            mutableSession.value = Session(address, mutableSession.value.generation + 1)
+        }
     }
+
     override fun close() {
-        if (registered) { manager.unregisterNetworkCallback(callback); registered = false }
-        synchronized(addresses) { addresses.clear(); mutableAddress.value = "" }
+        synchronized(lock) {
+            if (registered) { manager.unregisterNetworkCallback(callback); registered = false }
+            publish(null, "")
+        }
     }
 
     companion object {
+        internal fun selectAddress(activeVpn: Boolean, addresses: List<InetAddress>): String {
+            if (!activeVpn) return ""
+            return addresses.filter(::isTailscaleAddress).mapNotNull { it.hostAddress?.substringBefore('%') }
+                .sortedWith(compareBy<String> { ':' in it }.thenBy { it }).firstOrNull().orEmpty()
+        }
+
         internal fun isTailscaleAddress(address: InetAddress): Boolean {
             val b = address.address.map { it.toInt() and 255 }
             return (b.size == 4 && b[0] == 100 && b[1] in 64..127) ||

@@ -101,10 +101,17 @@ func (c *Client) Send(peerID, kind, text, pathsJSON string) (string, error) {
 		return "", errors.New("client is closed")
 	}
 	p, ok := c.state.Peers[peerID]
-	pin := c.state.Trust[peerID]
+	pin := c.effectivePinLocked(peerID)
 	if !ok || pin == "" || pin != p.Fingerprint {
+		err := errors.New("verify and trust this device before sending")
+		if c.state.TrustTailnet {
+			err = errors.New("connect to Tailscale and wait for this device to become available")
+		}
+		if c.blockedLocked(p) {
+			err = errors.New("device is blocked")
+		}
 		c.mu.Unlock()
-		return "", errors.New("verify and trust this device before sending")
+		return "", err
 	}
 	if c.pendingLocked() >= maxPending {
 		c.mu.Unlock()
@@ -132,7 +139,7 @@ func (c *Client) Send(peerID, kind, text, pathsJSON string) (string, error) {
 	if c.closed {
 		return "", errors.New("client is closed")
 	}
-	if c.state.Trust[peerID] != pin || c.state.Peers[peerID].Fingerprint != pin {
+	if c.effectivePinLocked(peerID) != pin || c.state.Peers[peerID].Fingerprint != pin {
 		return "", errors.New("device trust changed")
 	}
 	if c.pendingLocked() >= maxPending {
@@ -179,7 +186,7 @@ func (c *Client) scheduler() {
 				continue
 			}
 			p, ok := c.state.Peers[t.PeerID]
-			if !ok || c.state.Trust[p.ID] != j.Fingerprint || p.Fingerprint != j.Fingerprint {
+			if !ok || c.effectivePinLocked(p.ID) != j.Fingerprint || p.Fingerprint != j.Fingerprint {
 				continue
 			}
 			if t.Status == "interrupted" && time.Since(t.Updated) < time.Duration(1<<min(t.Retry, 5))*time.Second {
@@ -276,8 +283,8 @@ func (c *Client) decide(ctx context.Context, fp string, o transfer.Offer) error 
 	digest := hex.EncodeToString(h[:])
 	c.mu.Lock()
 	var peer model.Peer
-	for id, pin := range c.state.Trust {
-		if pin == fp {
+	for id := range c.state.Peers {
+		if fp != "" && c.effectivePinLocked(id) == fp {
 			peer = c.state.Peers[id]
 			break
 		}
@@ -379,7 +386,7 @@ func (c *Client) Action(action, id string) (string, error) {
 		if j.Transfer.Direction != "receive" || j.Transfer.Status != "offered" || c.decisions[id] == nil {
 			return "", errors.New("no incoming offer awaiting approval")
 		}
-		if c.state.Trust[j.Transfer.PeerID] != j.Fingerprint {
+		if c.effectivePinLocked(j.Transfer.PeerID) != j.Fingerprint {
 			return "", errors.New("sender is not trusted")
 		}
 		j.Accepted = true
@@ -402,7 +409,10 @@ func (c *Client) Action(action, id string) (string, error) {
 		if _, active := c.cancels[id]; active {
 			return "", errors.New("transfer is stopping; retry shortly")
 		}
-		if c.state.Trust[j.Transfer.PeerID] != j.Fingerprint {
+		if c.effectivePinLocked(j.Transfer.PeerID) != j.Fingerprint {
+			if c.state.TrustTailnet {
+				return "", errors.New("device is unavailable, blocked, or its identity changed")
+			}
 			return "", errors.New("verify and trust the device before resuming")
 		}
 		j.Transfer.Status = "interrupted"

@@ -6,6 +6,7 @@ import org.junit.Test
 class SnapshotParserTest {
     @Test fun emptyStateHasNoInventedTrustOrAvailability() {
         val state = SnapshotParser.snapshot("{}")
+        assertEquals("tailnet", state.trustMode)
         assertFalse(state.running)
         assertFalse(state.autoAccept)
         assertFalse(state.loading)
@@ -41,6 +42,19 @@ class SnapshotParserTest {
         assertFalse(peer.trusted)
         assertThrows(IllegalArgumentException::class.java) { SnapshotParser.peerResult("{}") }
     }
+    @Test fun preservesTailnetAuthorizationBlocksAndManualMode() {
+        val state = SnapshotParser.snapshot("""{"trust_mode":"tailnet","peers":[{"id":"ready","trusted":true},{"id":"blocked","trusted":false,"blocked":true}]}""")
+        assertEquals("tailnet", state.trustMode)
+        assertTrue(state.peers[0].trusted)
+        assertFalse(state.peers[0].blocked)
+        assertFalse(state.peers[1].trusted)
+        assertTrue(state.peers[1].blocked)
+        assertEquals("manual", SnapshotParser.snapshot("""{"trust_mode":"manual"}""").trustMode)
+        assertTrue(SnapshotParser.peerResult("""{"id":"added","trusted":true}""").trusted)
+        assertThrows(IllegalArgumentException::class.java) { SnapshotParser.snapshot("""{"trust_mode":"anything"}""") }
+        assertThrows(IllegalArgumentException::class.java) { SnapshotParser.snapshot("""{"peers":[{"blocked":"true"}]}""") }
+    }
+
     @Test fun failedActionNeverLooksSuccessful() {
         assertThrows(IllegalArgumentException::class.java) { SnapshotParser.result("""{"ok":false,"message":"Fingerprint changed"}""") }
         assertThrows(IllegalArgumentException::class.java) { SnapshotParser.result("""{"ok":"true"}""") }

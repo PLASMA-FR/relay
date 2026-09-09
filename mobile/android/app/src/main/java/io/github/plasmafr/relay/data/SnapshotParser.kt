@@ -15,6 +15,9 @@ internal object SnapshotParser {
             name = value.string("name"), fingerprint = value.string("fingerprint"),
             address = value.string("address"), running = value.boolean("running"),
             autoAccept = value.boolean("auto_accept"),
+            trustMode = value.string("trust_mode").ifBlank { "tailnet" }.also {
+                require(it in setOf("tailnet", "manual")) { "Invalid device trust mode" }
+            },
             peers = value.array("peers").objects(::peer),
             transfers = value.array("transfers").objects(::transfer),
             history = value.array("history").objects(::transfer),
@@ -44,7 +47,7 @@ internal object SnapshotParser {
         id = o.string("id"), name = o.string("name"), hostname = o.string("hostname"),
         address = o.string("address"), os = o.string("os"), arch = o.string("arch"),
         version = o.string("version"), fingerprint = o.string("fingerprint"), error = o.string("error"),
-        online = o.boolean("online"), relay = o.boolean("relay"), trusted = o.boolean("trusted"),
+        online = o.boolean("online"), relay = o.boolean("relay"), trusted = o.boolean("trusted"), blocked = o.boolean("blocked"),
         protocol = o.number("protocol").toInt(), latencyMs = o.number("latency_ms").toLong(),
     )
 

@@ -30,6 +30,9 @@ func testClient(t *testing.T) *Client {
 	if e != nil {
 		t.Fatal(e)
 	}
+	if e = c.SetTrustTailnet(false); e != nil {
+		t.Fatal(e)
+	}
 	t.Cleanup(func() { _ = c.Close() })
 	if e = c.startAddress("127.0.0.1:0"); e != nil {
 		t.Fatal(e)

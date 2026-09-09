@@ -14,9 +14,7 @@ import (
 	"time"
 
 	"github.com/PLASMA-FR/relay/internal/invite"
-	"github.com/PLASMA-FR/relay/internal/model"
 	"github.com/PLASMA-FR/relay/internal/protocol"
-	"github.com/PLASMA-FR/relay/internal/transfer"
 )
 
 func validHello(h protocol.Hello) bool {
@@ -75,56 +73,19 @@ func (c *Client) addDevice(address, pin string) (string, error) {
 		return "", err
 	}
 	defer finish()
-	start := time.Now()
-	hello, err := c.engine.Probe(ctx, address)
+	c.mu.Lock()
+	generation := c.policyGeneration
+	c.mu.Unlock()
+	p, err := c.probePeer(ctx, address, pin, generation)
 	if err != nil {
 		return "", err
 	}
-	if pin != "" && hello.Fingerprint != pin {
-		return "", errors.New("invitation fingerprint does not match this device")
-	}
-	if !validHello(hello) {
-		return "", errors.New("peer sent an invalid name")
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.closed || ctx.Err() != nil {
-		return "", errors.New("connection stopped")
-	}
-	var previous model.Peer
-	for _, p := range c.state.Peers {
-		if p.Address == address {
-			previous = p
-			break
-		}
-	}
-	id := previous.ID
-	if id == "" {
-		if len(c.state.Peers) >= maxPeers {
-			return "", errors.New("saved device limit reached")
-		}
-		id = transfer.NewID()
-	}
-	p := model.Peer{ID: id, Name: hello.Name, Hostname: hello.Hostname, Address: address, OS: hello.OS, Arch: hello.Arch, Online: true, Relay: true, Version: hello.Version, Protocol: hello.Protocol, Capabilities: hello.Capabilities, Fingerprint: hello.Fingerprint, LastSeen: time.Now(), LatencyMS: time.Since(start).Milliseconds()}
-	p.Trusted = c.state.Trust[id] != "" && c.state.Trust[id] == p.Fingerprint
-	if c.state.Trust[id] != "" && !p.Trusted {
-		p.Error = "Identity changed; verify the full fingerprint again"
-	}
-	c.state.Peers[id] = p
-	if err = c.persistLocked(); err != nil {
-		if previous.ID == "" {
-			delete(c.state.Peers, id)
-		} else {
-			c.state.Peers[id] = previous
-		}
-		return "", err
-	}
-	c.changedLocked()
+	signal(c.discoveryWake)
 	b, _ := json.Marshal(p)
 	return string(b), nil
 }
 
-// ImportInvite checks the invitation pin against a live TLS probe. Trust remains explicit.
+// ImportInvite checks the invitation pin against a live TLS probe and applies the trust policy.
 func (c *Client) ImportInvite(uri string) (string, error) {
 	i, err := invite.Parse(uri)
 	if err != nil {
@@ -147,7 +108,7 @@ func (c *Client) Invite() (string, error) {
 	return i.URL(), nil
 }
 
-// Trust persists a full observed fingerprint before enabling transfers.
+// Trust clears a block in automatic mode, or durably pins an observed key in manual mode.
 func (c *Client) Trust(peerID, fingerprint string) error {
 	b, err := hex.DecodeString(fingerprint)
 	if err != nil || len(b) != 32 || strings.ToLower(fingerprint) != fingerprint {
@@ -163,7 +124,17 @@ func (c *Client) Trust(peerID, fingerprint string) error {
 		return errors.New("fingerprint does not match the observed device")
 	}
 	old := c.state.Trust[peerID]
-	c.state.Trust[peerID] = fingerprint
+	oldBlocks := c.state.Blocks
+	c.state.Blocks = make(map[string]bool, len(oldBlocks))
+	for key, blocked := range oldBlocks {
+		c.state.Blocks[key] = blocked
+	}
+	delete(c.state.Blocks, "id:"+peerID)
+	delete(c.state.Blocks, "address:"+p.Address)
+	delete(c.state.Blocks, "fingerprint:"+fingerprint)
+	if !c.state.TrustTailnet {
+		c.state.Trust[peerID] = fingerprint
+	}
 	// The lock prevents engine authorization until durable commit succeeds.
 	if err = c.persistLocked(); err != nil {
 		if old == "" {
@@ -171,8 +142,11 @@ func (c *Client) Trust(peerID, fingerprint string) error {
 		} else {
 			c.state.Trust[peerID] = old
 		}
+		c.state.Blocks = oldBlocks
 		return err
 	}
+	c.policyGeneration++
+	signal(c.discoveryWake)
 	c.changedLocked()
 	return nil
 }
@@ -187,7 +161,15 @@ func (c *Client) Untrust(peerID string) error {
 	if _, ok := c.state.Peers[peerID]; !ok {
 		return errors.New("device not found")
 	}
-	pin := c.state.Trust[peerID]
+	pin := c.state.Peers[peerID].Fingerprint
+	if c.state.TrustTailnet {
+		p := c.state.Peers[peerID]
+		c.state.Blocks["id:"+peerID] = true
+		c.state.Blocks["address:"+p.Address] = true
+		c.state.Blocks["fingerprint:"+pin] = true
+	}
+	c.policyGeneration++
+	delete(c.autoPins, peerID)
 	delete(c.state.Trust, peerID)
 	if pin != "" {
 		for id, other := range c.state.Trust {
@@ -225,80 +207,76 @@ func (c *Client) Untrust(peerID string) error {
 	return err
 }
 
-// Refresh probes only saved numeric Tailscale endpoints, with four bounded workers.
+// Refresh probes saved endpoints and bounded directory hints with four workers.
+// Hints are discovery candidates only; every automatic key comes from live TLS.
 func (c *Client) Refresh() error {
 	ctx, finish, err := c.beginNetwork()
 	if err != nil {
 		return err
 	}
 	defer finish()
-	c.mu.Lock()
-	peers := make([]model.Peer, 0, len(c.state.Peers))
-	for _, p := range c.state.Peers {
-		peers = append(peers, p)
+	return c.refresh(ctx)
+}
+
+func (c *Client) refresh(ctx context.Context) error {
+	// Coalesce public refresh with the periodic worker, retaining context cancellation.
+	if !c.refreshMu.TryLock() {
+		return nil
 	}
+	defer c.refreshMu.Unlock()
+	c.mu.Lock()
+	generation := c.policyGeneration
+	addresses := map[string]bool{}
+	for _, p := range c.state.Peers {
+		if !c.blockedLocked(p) {
+			addresses[p.Address] = true
+		}
+	}
+	if c.state.TrustTailnet {
+		for address := range c.candidates {
+			addresses[address] = true
+		}
+	}
+	c.candidates = map[string]bool{}
 	c.mu.Unlock()
-	jobs := make(chan model.Peer, len(peers))
-	for _, p := range peers {
-		jobs <- p
+	jobs := make(chan string, len(addresses))
+	for address := range addresses {
+		jobs <- address
 	}
 	close(jobs)
 	var wg sync.WaitGroup
-	for n := 0; n < min(4, len(peers)); n++ {
+	for n := 0; n < min(4, len(addresses)); n++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for p := range jobs {
+			for address := range jobs {
 				if ctx.Err() != nil {
 					return
 				}
-				address, e := c.peerAddress(p.Address)
-				started := time.Now()
-				if e == nil {
-					h, probeErr := c.engine.Probe(ctx, address)
-					e = probeErr
-					if e == nil {
-						if !validHello(h) {
-							e = errors.New("peer sent an invalid name")
-						} else {
-							p.Name = h.Name
-							p.Hostname = h.Hostname
-							p.Fingerprint = h.Fingerprint
-							p.OS = h.OS
-							p.Arch = h.Arch
-							p.Protocol = h.Protocol
-							p.Version = h.Version
-							p.Capabilities = h.Capabilities
-							p.LastSeen = time.Now()
-							p.LatencyMS = time.Since(started).Milliseconds()
-						}
-					}
+				probeCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
+				p, err := c.probePeer(probeCtx, address, "", generation)
+				if err == nil {
+					c.exchangeDirectory(probeCtx, p, generation)
 				}
-				c.mu.Lock()
-				if ctx.Err() == nil && !c.closed {
-					current, ok := c.state.Peers[p.ID]
-					if ok && current.Address == p.Address {
-						p.Online = e == nil
-						p.Relay = e == nil
-						p.Error = ""
-						if e != nil {
-							p.Error = e.Error()
-						} else if pin := c.state.Trust[p.ID]; pin != "" && pin != p.Fingerprint {
-							p.Error = "Identity changed; verify the full fingerprint again"
+				cancel()
+				if err != nil {
+					c.mu.Lock()
+					if ctx.Err() == nil && generation == c.policyGeneration {
+						for id, current := range c.state.Peers {
+							if current.Address == address {
+								current.Online = false
+								current.Error = err.Error()
+								c.state.Peers[id] = current
+								delete(c.autoPins, id)
+							}
 						}
-						c.state.Peers[p.ID] = p
 						c.changedLocked()
 					}
+					c.mu.Unlock()
 				}
-				c.mu.Unlock()
 			}
 		}()
 	}
 	wg.Wait()
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if ctx.Err() != nil {
-		return ctx.Err()
-	}
-	return c.persistLocked()
+	return ctx.Err()
 }

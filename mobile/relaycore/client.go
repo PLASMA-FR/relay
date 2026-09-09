@@ -44,12 +44,14 @@ type job struct {
 	Digest      string             `json:"digest,omitempty"`
 }
 type diskState struct {
-	Version     int                   `json:"version"`
-	Peers       map[string]model.Peer `json:"peers"`
-	Trust       map[string]string     `json:"trust"`
-	Jobs        map[string]*job       `json:"jobs"`
-	AutoAccept  bool                  `json:"auto_accept"`
-	ClipboardID string                `json:"clipboard_transfer_id,omitempty"`
+	Version      int                   `json:"version"`
+	Peers        map[string]model.Peer `json:"peers"`
+	Trust        map[string]string     `json:"trust"`
+	Jobs         map[string]*job       `json:"jobs"`
+	AutoAccept   bool                  `json:"auto_accept"`
+	TrustTailnet bool                  `json:"trust_tailnet"`
+	Blocks       map[string]bool       `json:"blocks,omitempty"`
+	ClipboardID  string                `json:"clipboard_transfer_id,omitempty"`
 }
 type snapshot struct {
 	model.Snapshot
@@ -86,7 +88,12 @@ type Client struct {
 	done                  chan struct{}
 	observer              Observer
 	// Only package-local tests can inject loopback. Public methods have no insecure mode.
-	allowAddress func(netip.Addr) bool
+	allowAddress     func(netip.Addr) bool
+	autoPins         map[string]string
+	candidates       map[string]bool
+	discoveryWake    chan struct{}
+	policyGeneration uint64
+	refreshMu        sync.Mutex
 }
 
 // NewClient loads an existing identity and queue; it does not start network activity.
@@ -116,7 +123,7 @@ func newClient(stateDirectory, inboxDirectory, deviceName string, events Observe
 	if err != nil {
 		return nil, err
 	}
-	c := &Client{stateDir: stateDir, inbox: inbox, name: deviceName, identity: id, clipboard: clipboard.New(stateDir), state: diskState{Version: 1, Peers: map[string]model.Peer{}, Trust: map[string]string{}, Jobs: map[string]*job{}}, cancels: map[string]context.CancelFunc{}, preparing: map[string][]string{}, decisions: map[string]chan bool{}, changes: make(chan struct{}, 1), wake: make(chan struct{}, 1), done: make(chan struct{}), observer: events, allowAddress: allow}
+	c := &Client{stateDir: stateDir, inbox: inbox, name: deviceName, identity: id, clipboard: clipboard.New(stateDir), state: diskState{Version: 1, TrustTailnet: true, Blocks: map[string]bool{}, Peers: map[string]model.Peer{}, Trust: map[string]string{}, Jobs: map[string]*job{}}, cancels: map[string]context.CancelFunc{}, preparing: map[string][]string{}, decisions: map[string]chan bool{}, changes: make(chan struct{}, 1), wake: make(chan struct{}, 1), done: make(chan struct{}), observer: events, allowAddress: allow, autoPins: map[string]string{}, candidates: map[string]bool{}, discoveryWake: make(chan struct{}, 1)}
 	if err = c.load(); err != nil {
 		return nil, err
 	}
@@ -125,7 +132,7 @@ func newClient(stateDirectory, inboxDirectory, deviceName string, events Observe
 	if err != nil {
 		return nil, err
 	}
-	c.engine, err = transfer.New(transfer.Options{Identity: id, StateDir: stateDir, ReceiveDir: inbox, Conflict: "rename", MaxBytes: 2 << 30, Hello: protocol.Hello{Name: deviceName, Hostname: deviceName, OS: "android", Arch: runtime.GOARCH, Version: model.Version, Capabilities: []string{"files", "text", "url", "sha256", "resume"}}, Trusted: c.trusted, Decide: c.decide, Progress: c.progress})
+	c.engine, err = transfer.New(transfer.Options{Identity: id, StateDir: stateDir, ReceiveDir: inbox, Conflict: "rename", MaxBytes: 2 << 30, Hello: protocol.Hello{Name: deviceName, Hostname: deviceName, OS: "android", Arch: runtime.GOARCH, Version: model.Version, Capabilities: []string{"files", "text", "url", "sha256", "resume"}}, Trusted: c.trusted, AuthorizePeer: c.authorizePeer, PeerDirectory: c.peerDirectory, Decide: c.decide, Progress: c.progress})
 	if err != nil {
 		return nil, err
 	}
@@ -212,13 +219,18 @@ func (c *Client) Snapshot() string {
 	if c.trustPersistenceError != "" {
 		s.Notices = append(s.Notices, c.trustPersistenceError)
 	}
+	s.TrustMode = "manual"
+	if c.state.TrustTailnet {
+		s.TrustMode = "tailnet"
+	}
 	if c.running {
 		s.Tailscale = "Connected"
 	} else {
 		s.Tailscale = "Unavailable"
 	}
 	for _, p := range c.state.Peers {
-		p.Trusted = c.state.Trust[p.ID] != "" && c.state.Trust[p.ID] == p.Fingerprint
+		p.Trusted = c.effectivePinLocked(p.ID) != "" && c.effectivePinLocked(p.ID) == p.Fingerprint
+		p.Blocked = c.blockedLocked(p)
 		s.Peers = append(s.Peers, p)
 	}
 	for _, j := range c.state.Jobs {
@@ -275,10 +287,11 @@ func (c *Client) startAddress(address string) error {
 	c.networkCtx = ctx
 	c.networkCancel = cancel
 	c.running = true
-	c.netWG.Add(1)
+	c.netWG.Add(2)
 	c.changedLocked()
 	c.mu.Unlock()
 	go func() { defer c.netWG.Done(); c.accept(ctx, l) }()
+	go func() { defer c.netWG.Done(); c.discover(ctx) }()
 	return nil
 }
 func (c *Client) accept(ctx context.Context, l net.Listener) {
@@ -316,6 +329,8 @@ func (c *Client) Stop() error { c.lifecycle.Lock(); defer c.lifecycle.Unlock(); 
 func (c *Client) stopNetwork() error {
 	c.mu.Lock()
 	c.running = false
+	c.autoPins = map[string]string{}
+	c.candidates = map[string]bool{}
 	c.address = ""
 	if c.networkCancel != nil {
 		c.networkCancel()
@@ -372,8 +387,8 @@ func (c *Client) Close() error {
 func (c *Client) trusted(fp string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for _, pin := range c.state.Trust {
-		if fp != "" && fp == pin {
+	for id := range c.state.Peers {
+		if fp != "" && fp == c.effectivePinLocked(id) {
 			return true
 		}
 	}
@@ -405,11 +420,11 @@ func (c *Client) load() error {
 	if err != nil {
 		return err
 	}
-	var s diskState
+	s := diskState{TrustTailnet: true}
 	if err = json.Unmarshal(b, &s); err != nil {
 		return fmt.Errorf("read mobile state: %w", err)
 	}
-	if s.Version != 1 || len(s.Peers) > maxPeers || len(s.Jobs) > maxPending+maxHistory || len(s.Trust) > maxPeers {
+	if s.Version != 1 || len(s.Peers) > maxPeers || len(s.Jobs) > maxPending+maxHistory || len(s.Trust) > maxPeers || len(s.Blocks) > maxPeers*3 {
 		return errors.New("unsupported or oversized mobile state")
 	}
 	if s.Peers == nil {
@@ -417,6 +432,9 @@ func (c *Client) load() error {
 	}
 	if s.Trust == nil {
 		s.Trust = map[string]string{}
+	}
+	if s.Blocks == nil {
+		s.Blocks = map[string]bool{}
 	}
 	if s.Jobs == nil {
 		s.Jobs = map[string]*job{}

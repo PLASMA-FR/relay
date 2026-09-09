@@ -58,6 +58,7 @@ data class RelayUiActions(
     val onScan: () -> Unit = {},
     val onAction: (String, String) -> Unit = { _, _ -> },
     val onAutoAccept: (Boolean) -> Unit = {},
+    val onTrustTailnet: (Boolean) -> Unit = {},
     val onExport: (String) -> Unit = {},
     val onShareFile: (String) -> Unit = {},
     val onClearShared: () -> Unit = {},
@@ -78,6 +79,7 @@ fun RelayScreen(
     busy: Boolean = false,
     message: String? = null,
 ) {
+    val automaticTrust = state.trustMode == "tailnet"
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var showAdd by rememberSaveable { mutableStateOf(false) }
     var showIdentity by rememberSaveable { mutableStateOf(false) }
@@ -143,7 +145,7 @@ fun RelayScreen(
                             Icon(Icons.Outlined.SyncAlt, null, tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(23.dp))
                         }
                         Text("relay", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(start = 10.dp).weight(1f))
-                        IconButton(onClick = { showIdentity = true }, modifier = Modifier.testTag("my_device")) { Icon(Icons.Outlined.PhonelinkRing, "My device and pairing details") }
+                        IconButton(onClick = { showIdentity = true }, modifier = Modifier.testTag("my_device")) { Icon(Icons.Outlined.PhonelinkRing, "My device and settings") }
                     }
                 }
                 item {
@@ -185,16 +187,16 @@ fun RelayScreen(
                                 }
                             }
                         }
-                        if (state.peers.isEmpty()) item { Onboarding(actions, onAdd = { showAdd = true }) }
+                        if (state.peers.isEmpty()) item { Onboarding(state, actions, onAdd = { showAdd = true }) }
                         val rows = if (wideLayout) state.peers.chunked(2) else state.peers.chunked(1)
                         items(rows, key = { it.first().id }) { peers ->
                             Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                                peers.forEach { peer -> Box(Modifier.weight(1f)) { DeviceCard(peer, onClick = { selectedPeer = peer }) } }
+                                peers.forEach { peer -> Box(Modifier.weight(1f)) { DeviceCard(peer, automaticTrust, onClick = { selectedPeer = peer }) } }
                                 if (wideLayout && peers.size == 1) Spacer(Modifier.weight(1f))
                             }
                         }
                         if (state.peers.isNotEmpty()) item {
-                            Text("Only devices you verify can exchange with you. Pair both ways to send and receive.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(if (automaticTrust) "Relay devices on your Tailnet connect automatically. ${if (state.autoAccept) "Incoming transfers are accepted automatically." else "Incoming files still ask for approval."}" else "Only devices you verify can exchange with you. Pair both ways to send and receive.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                     1 -> {
@@ -233,13 +235,20 @@ fun RelayScreen(
             title = { Text("Bring a device closer") },
             text = {
                 Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                    Text("Run Relay on the other device and connect both devices to your Tailscale network. Paste its pairing link or Tailscale address.")
-                    OutlinedTextField(value = addInput, onValueChange = { addInput = it }, label = { Text("Pairing link or address") }, placeholder = { Text("100.64.0.5:7331") }, modifier = Modifier.fillMaxWidth().testTag("device_address"), minLines = 2, maxLines = 4, enabled = !busy)
-                    OutlinedButton(onClick = actions.onScan, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Outlined.QrCodeScanner, null); Spacer(Modifier.width(8.dp)); Text("Scan pairing QR code") }
-                    Text("You’ll compare its full fingerprint before trusting it.", style = MaterialTheme.typography.bodySmall)
+                    Text(if (automaticTrust) "Devices appear automatically when a Relay computer discovers this phone. If you only use phones, enter one phone’s Tailscale address to start discovery." else "Run Relay on the other device and connect both devices to your Tailscale network. Paste its pairing link or Tailscale address.")
+                    OutlinedTextField(value = addInput, onValueChange = { addInput = it }, label = { Text(if (automaticTrust) "Tailscale address or device link" else "Pairing link or address") }, placeholder = { Text("100.64.0.5:7331") }, modifier = Modifier.fillMaxWidth().testTag("device_address"), minLines = 2, maxLines = 4, enabled = !busy)
+                    OutlinedButton(onClick = actions.onScan, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Outlined.QrCodeScanner, null); Spacer(Modifier.width(8.dp)); Text(if (automaticTrust) "Scan device QR code" else "Scan pairing QR code") }
+                    Text(if (automaticTrust) "No pairing or fingerprint comparison needed. Keep Tailscale connected and Relay available on both devices." else "You’ll compare its full fingerprint before trusting it.", style = MaterialTheme.typography.bodySmall)
                 }
             },
-            confirmButton = { TextButton(enabled = addInput.isNotBlank() && !busy, onClick = { actions.onAddDevice(addInput.trim()) { peer -> showAdd = false; trustCandidate = peer } }, modifier = Modifier.testTag("connect_device")) { Text(if (busy) "Connecting…" else "Continue") } },
+            confirmButton = {
+                TextButton(enabled = addInput.isNotBlank() && !busy, onClick = {
+                    actions.onAddDevice(addInput.trim()) { peer ->
+                        showAdd = false
+                        if (automaticTrust || peer.trusted) selectedPeer = peer else trustCandidate = peer
+                    }
+                }, modifier = Modifier.testTag("connect_device")) { Text(if (busy) "Connecting…" else "Continue") }
+            },
             dismissButton = { TextButton(enabled = !busy, onClick = { showAdd = false }) { Text("Cancel") } },
         )
     }
@@ -248,10 +257,15 @@ fun RelayScreen(
             SheetContent {
                 Text("This is your device", style = MaterialTheme.typography.headlineMedium)
                 Text(state.name.ifBlank { "Relay for Android" }, style = MaterialTheme.typography.titleLarge)
-                Text(state.address.ifBlank { "Connect Tailscale and turn availability on to get a pairing link." }, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text("DEVICE FINGERPRINT", style = MaterialTheme.typography.labelMedium)
-                Fingerprint(state.fingerprint)
-                Text("Compare this fingerprint on your other device. Pairing details are public; only share them with devices you want to connect.", style = MaterialTheme.typography.bodyMedium)
+                Text(state.address.ifBlank { "Connect Tailscale and turn availability on to get your device address." }, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (automaticTrust) {
+                    Text("Tailnet devices connect automatically", style = MaterialTheme.typography.titleMedium)
+                    Text("Keep Tailscale connected and Relay available. A computer running Relay introduces the devices on your network. With phones only, use one device address to start discovery.", style = MaterialTheme.typography.bodyMedium)
+                } else {
+                    Text("DEVICE FINGERPRINT", style = MaterialTheme.typography.labelMedium)
+                    Fingerprint(state.fingerprint)
+                    Text("Compare this fingerprint on your other device before trusting it.", style = MaterialTheme.typography.bodyMedium)
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     Button(onClick = actions.onShareInvite, enabled = state.running && !busy, modifier = Modifier.weight(1f)) { Icon(Icons.Outlined.Share, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("Share link") }
                     OutlinedButton(onClick = actions.onCopyInvite, enabled = state.running && !busy, modifier = Modifier.weight(1f)) { Text("Copy link") }
@@ -260,9 +274,18 @@ fun RelayScreen(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text("Automatically accept", style = MaterialTheme.typography.titleMedium)
-                        Text("Receive from trusted devices without asking. Off by default.", style = MaterialTheme.typography.bodySmall)
+                        Text(if (automaticTrust) "Receive from Tailnet devices without asking. Off by default." else "Receive from trusted devices without asking. Off by default.", style = MaterialTheme.typography.bodySmall)
                     }
-                    Switch(checked = state.autoAccept, onCheckedChange = actions.onAutoAccept, enabled = !busy, modifier = Modifier.semantics { contentDescription = "Automatically accept from trusted devices" })
+                    Switch(checked = state.autoAccept, onCheckedChange = actions.onAutoAccept, enabled = !busy, modifier = Modifier.semantics { contentDescription = "Automatically accept incoming transfers" })
+                }
+                HorizontalDivider()
+                Text("Advanced", style = MaterialTheme.typography.labelLarge)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Trust Tailnet devices", style = MaterialTheme.typography.titleMedium)
+                        Text("On: no pairing. Off: manually verify device fingerprints. File approval is a separate setting.", style = MaterialTheme.typography.bodySmall)
+                    }
+                    Switch(checked = automaticTrust, onCheckedChange = actions.onTrustTailnet, enabled = !busy, modifier = Modifier.testTag("trust_tailnet").semantics { contentDescription = "Trust Tailnet devices automatically" })
                 }
             }
         }
@@ -278,9 +301,16 @@ fun RelayScreen(
                         Text(peer.address, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
-                if (!peer.trusted) {
-                    NoticeCard("Verify this device’s fingerprint before sending or receiving.", Icons.Outlined.Shield)
-                    Button(onClick = { selectedPeer = null; trustCandidate = peer }, enabled = !busy, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("verify_peer")) { Text("Verify device") }
+                if (automaticTrust && peer.blocked) {
+                    NoticeCard("This device is blocked from exchanging files and text. It stays blocked until you unblock it.", Icons.Outlined.Block)
+                    Button(onClick = { actions.onTrust(peer) { selectedPeer = null } }, enabled = !busy && peer.fingerprint.length == 64, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("unblock_peer")) { Text("Unblock device") }
+                } else if (!peer.trusted || peer.blocked) {
+                    if (automaticTrust) {
+                        NoticeCard("Waiting for this Tailnet device. Keep Tailscale connected and Relay available on both devices, then refresh.", Icons.Outlined.WifiOff)
+                    } else {
+                        NoticeCard(if (peer.blocked) "This device is blocked. Verify its fingerprint to unblock it in manual mode." else "Verify this device’s fingerprint before sending or receiving.", Icons.Outlined.Shield)
+                        Button(onClick = { selectedPeer = null; trustCandidate = peer }, enabled = !busy, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("verify_peer")) { Text(if (peer.blocked) "Verify and unblock" else "Verify device") }
+                    }
                 } else {
                     if (!peer.online || !state.running) NoticeCard("${if (!state.running) "Turn availability on" else "This device is offline"}. Check that both devices are running Relay on the same Tailscale network, then refresh.", Icons.Outlined.WifiOff)
                     val canSend = !busy && state.running && peer.online
@@ -295,6 +325,11 @@ fun RelayScreen(
                     SheetAction(Icons.Outlined.ContentPaste, "Send clipboard", "Review before sending", canSend) {
                         actions.onReadClipboard { text -> selectedPeer = null; editorPeer = peer; editorKind = "text"; editorText = text }
                     }
+                }
+                if (automaticTrust && !peer.blocked) {
+                    HorizontalDivider()
+                    TextButton(onClick = { selectedPeer = null; revokeCandidate = peer }, enabled = !busy, modifier = Modifier.testTag("block_peer")) { Text("Block device", color = MaterialTheme.colorScheme.error) }
+                } else if (!automaticTrust && peer.trusted) {
                     HorizontalDivider()
                     TextButton(onClick = { selectedPeer = null; trustCandidate = peer }) { Text("View fingerprint") }
                     TextButton(onClick = { selectedPeer = null; revokeCandidate = peer }, enabled = !busy) { Text("Remove trust", color = MaterialTheme.colorScheme.error) }
@@ -302,18 +337,19 @@ fun RelayScreen(
             }
         }
     }
-    trustCandidate?.let { peer ->
+    trustCandidate?.takeIf { !automaticTrust }?.let { peer ->
+        val requiresTrust = !peer.trusted || peer.blocked
         var confirmed by remember(peer.id) { mutableStateOf(false) }
         AlertDialog(
             onDismissRequest = { if (!busy) trustCandidate = null },
             icon = { Icon(Icons.Outlined.VerifiedUser, null) },
-            title = { Text(if (peer.trusted) "Trusted device" else "Verify ${peer.name.ifBlank { "device" }}") },
+            title = { Text(if (!requiresTrust) "Trusted device" else "Verify ${peer.name.ifBlank { "device" }}") },
             text = {
                 Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                     Text(peer.address, style = MaterialTheme.typography.bodyMedium)
                     Text("Compare every group below with the fingerprint shown by Relay on the other device, or confirm that its pairing link came directly from that device.")
                     Fingerprint(peer.fingerprint)
-                    if (!peer.trusted) {
+                    if (requiresTrust) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Checkbox(checked = confirmed, onCheckedChange = { confirmed = it }, modifier = Modifier.testTag("confirm_fingerprint").semantics { contentDescription = "I verified the full device fingerprint or trusted pairing link" })
                             Text("I verified this fingerprint or the pairing link’s source.", style = MaterialTheme.typography.bodyMedium)
@@ -323,17 +359,17 @@ fun RelayScreen(
                 }
             },
             confirmButton = {
-                if (peer.trusted) TextButton(onClick = { trustCandidate = null }) { Text("Done") }
-                else TextButton(onClick = { actions.onTrust(peer) { trustCandidate = null } }, enabled = confirmed && peer.fingerprint.length == 64 && !busy, modifier = Modifier.testTag("trust_device")) { Text("Trust device") }
+                if (!requiresTrust) TextButton(onClick = { trustCandidate = null }) { Text("Done") }
+                else TextButton(onClick = { actions.onTrust(peer) { trustCandidate = null } }, enabled = confirmed && peer.fingerprint.length == 64 && !busy, modifier = Modifier.testTag("trust_device")) { Text(if (peer.blocked) "Trust and unblock" else "Trust device") }
             },
-            dismissButton = { if (!peer.trusted) TextButton(onClick = { trustCandidate = null }, enabled = !busy) { Text("Not now") } },
+            dismissButton = { if (requiresTrust) TextButton(onClick = { trustCandidate = null }, enabled = !busy) { Text("Not now") } },
         )
     }
     revokeCandidate?.let { peer ->
         AlertDialog(
-            onDismissRequest = { revokeCandidate = null }, title = { Text("Remove trust?") },
-            text = { Text("${peer.name.ifBlank { "This device" }} will need to be verified again before exchanging files or text.") },
-            confirmButton = { TextButton(onClick = { actions.onUntrust(peer.id); revokeCandidate = null }) { Text("Remove trust") } },
+            onDismissRequest = { revokeCandidate = null }, title = { Text(if (automaticTrust) "Block device?" else "Remove trust?") },
+            text = { Text(if (automaticTrust) "${peer.name.ifBlank { "This device" }} will be blocked from exchanging files and text until you unblock it." else "${peer.name.ifBlank { "This device" }} will need to be verified again before exchanging files or text.") },
+            confirmButton = { TextButton(onClick = { actions.onUntrust(peer.id); revokeCandidate = null }, modifier = Modifier.testTag("confirm_block")) { Text(if (automaticTrust) "Block device" else "Remove trust") } },
             dismissButton = { TextButton(onClick = { revokeCandidate = null }) { Text("Keep device") } },
         )
     }
@@ -370,7 +406,7 @@ private fun AvailabilityCard(state: RelayState, actions: RelayUiActions, busy: B
 }
 
 @Composable
-private fun Onboarding(actions: RelayUiActions, onAdd: () -> Unit) {
+private fun Onboarding(state: RelayState, actions: RelayUiActions, onAdd: () -> Unit) {
     Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))) {
         Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
             Icon(Icons.Outlined.Devices, null, Modifier.size(54.dp), tint = MaterialTheme.colorScheme.primary)
@@ -378,9 +414,15 @@ private fun Onboarding(actions: RelayUiActions, onAdd: () -> Unit) {
             Text("Move files, links, and text between your phone and computers over your private Tailscale network.", color = MaterialTheme.colorScheme.onSurfaceVariant)
             SetupStep("1", "Connect Tailscale", "Use the same Tailscale network on both devices.")
             SetupStep("2", "Open Relay on both", "Turn availability on. On a computer, run the Relay daemon.")
-            SetupStep("3", "Pair and verify", "Add the other device’s pairing link or address, then compare fingerprints.")
+            if (state.trustMode == "tailnet") {
+                SetupStep("3", "Devices appear automatically", "No pairing needed. A computer running Relay discovers this phone and introduces your devices.")
+                if (state.running) Text("Waiting for a Relay computer to discover this phone…", modifier = Modifier.testTag("discovery_waiting"), style = MaterialTheme.typography.bodyMedium)
+                Text("Only using phones? Add one phone’s Tailscale address to start discovery.", style = MaterialTheme.typography.bodySmall)
+            } else {
+                SetupStep("3", "Pair and verify", "Add the other device’s pairing link or address, then compare fingerprints.")
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Button(onClick = onAdd, modifier = Modifier.weight(1f)) { Text("Add your first device") }
+                Button(onClick = onAdd, modifier = Modifier.weight(1f)) { Text(if (state.trustMode == "tailnet") "Enter an address" else "Add your first device") }
                 OutlinedButton(onClick = actions.onOpenTailscale, modifier = Modifier.weight(1f)) { Text("Tailscale") }
             }
         }
@@ -396,14 +438,14 @@ private fun SetupStep(number: String, title: String, detail: String) {
 }
 
 @Composable
-private fun DeviceCard(peer: Peer, onClick: () -> Unit) {
+private fun DeviceCard(peer: Peer, automaticTrust: Boolean, onClick: () -> Unit) {
     OutlinedCard(onClick = onClick, shape = RoundedCornerShape(22.dp), modifier = Modifier.fillMaxWidth().testTag("peer_${peer.id}")) {
         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 DeviceGlyph(peer)
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                     Icon(if (peer.trusted) Icons.Outlined.VerifiedUser else Icons.Outlined.Shield, null, Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(if (peer.trusted) "Verified" else "Verify device", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(if (automaticTrust) { if (peer.blocked) "Blocked" else if (peer.trusted) "Tailnet" else "Waiting" } else if (peer.trusted) "Verified" else "Verify device", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
             Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {

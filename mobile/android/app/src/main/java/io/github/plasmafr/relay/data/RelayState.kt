@@ -2,7 +2,7 @@ package io.github.plasmafr.relay.data
 
 data class RelayState(
     val name: String = "", val fingerprint: String = "", val address: String = "",
-    val running: Boolean = false, val autoAccept: Boolean = false,
+    val running: Boolean = false, val autoAccept: Boolean = false, val trustMode: String = "tailnet",
     val peers: List<Peer> = emptyList(), val transfers: List<Transfer> = emptyList(),
     val history: List<Transfer> = emptyList(), val clipboard: String = "",
     val clipboardTransferId: String = "", val notices: List<String> = emptyList(),
@@ -13,7 +13,7 @@ data class Peer(
     val id: String = "", val name: String = "", val hostname: String = "", val address: String = "",
     val os: String = "", val arch: String = "", val version: String = "", val fingerprint: String = "",
     val error: String = "", val online: Boolean = false, val relay: Boolean = false,
-    val trusted: Boolean = false, val protocol: Int = 0, val latencyMs: Long = 0,
+    val trusted: Boolean = false, val blocked: Boolean = false, val protocol: Int = 0, val latencyMs: Long = 0,
 )
 
 data class Transfer(

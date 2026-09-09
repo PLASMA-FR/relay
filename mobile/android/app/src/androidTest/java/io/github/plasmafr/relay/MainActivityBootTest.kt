@@ -20,6 +20,8 @@ class MainActivityBootTest {
         val state = repository.state.value
         assertEquals("Native startup should have no error", "", state.error)
         assertTrue(state.fingerprint.matches(Regex("[a-f0-9]{64}")))
+        assertEquals("tailnet", state.trustMode)
+        assertFalse(state.autoAccept)
         assertFalse("Receiving must be explicitly enabled", state.running)
         compose.onNodeWithText("Your devices.").assertIsDisplayed()
         compose.onNodeWithTag("availability").assertIsDisplayed()
